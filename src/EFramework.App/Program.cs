@@ -97,6 +97,7 @@ namespace EFramework.App
 
             // 契约生成的端点：登录发握手票据 + 版本查询（实现在 Api/LoginApi.cs，手写不被覆盖）
             web.MapLoginApi(new LoginApi(secretBytes, server, logger));
+            web.MapLanguageApi(new LanguageApi(logger));
 
             try
             {

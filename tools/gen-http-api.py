@@ -77,6 +77,29 @@ SUPPORTED_TYPES = {
     "bool": "bool",
 }
 
+
+def parse_field_type(raw):
+    """解析字段类型，返回 (基础类型, 是否数组)。只支持一维数组（如 bool[]）。"""
+    if raw.endswith("[]"):
+        base = raw[:-2]
+        if base not in SUPPORTED_TYPES:
+            raise ValueError(f"unsupported array element type '{base}' (supported: {', '.join(SUPPORTED_TYPES)})")
+        return base, True
+
+    if raw not in SUPPORTED_TYPES:
+        raise ValueError(f"unsupported type '{raw}' (supported: {', '.join(SUPPORTED_TYPES)}, 或加 [] 表示数组)")
+    return raw, False
+
+
+def json_key(field):
+    """线上 JSON 键名：默认 camelCase，契约可用 "json" 显式覆盖（对接已有后端时必须能对齐）。"""
+    explicit = field.get("json")
+    if explicit is not None:
+        if not explicit or " " in explicit:
+            raise ValueError(f"field '{field.get('name')}': invalid json key '{explicit}'")
+        return explicit
+    return camel(field["name"])
+
 SERVER_NAMESPACE = "EasyFramework.Http.Api.Generated"
 CLIENT_NAMESPACE = "EasyFramework.Api.Generated"
 
@@ -136,22 +159,21 @@ def load_contract(path):
             if not block.get("type"):
                 raise ValueError(f"{path}: endpoint '{endpoint_id}' {side} missing 'type'")
             for field in block.get("fields") or []:
-                field_type = field.get("type")
-                if field_type not in SUPPORTED_TYPES:
-                    raise ValueError(
-                        f"{path}: field '{field.get('name')}' has unsupported type '{field_type}' "
-                        f"(supported: {', '.join(SUPPORTED_TYPES)})")
                 if not field.get("name"):
                     raise ValueError(f"{path}: a field in endpoint '{endpoint_id}' has no name")
+                try:
+                    parse_field_type(field.get("type"))
+                except ValueError as exc:
+                    raise ValueError(f"{path}: field '{field.get('name')}': {exc}") from None
 
     return contract
 
 
 def cs_type(field):
-    base = SUPPORTED_TYPES[field["type"]]
-    if field.get("nullable") and base != "string":
-        return f"{base}?"
-    return base
+    base, is_array = parse_field_type(field["type"])
+    if field.get("nullable") and not is_array and base != "string":
+        base = f"{base}?"
+    return f"List<{base}>" if is_array else base
 
 
 def lower_first(text):
@@ -176,8 +198,18 @@ def gen_contracts(contract, source, target):
     attribute = "JsonPropertyName" if target == "server" else "JsonProperty"
     namespace = SERVER_NAMESPACE if target == "server" else CLIENT_NAMESPACE
 
+    needs_collections = any(
+        field.get("type", "").endswith("[]")
+        for endpoint in contract["endpoints"]
+        for block in (endpoint.get("request"), endpoint.get("response"))
+        if block
+        for field in block.get("fields") or [])
+
     lines = [HEADER.format(describe=f"{api} 契约类型（{target}）", source=source)]
-    lines.append(f"using {attribute_ns};\n")
+    lines.append(f"using {attribute_ns};")
+    if needs_collections:
+        lines.append("using System.Collections.Generic;")
+    lines.append("")
     lines.append(f"namespace {namespace}\n{{")
 
     emitted = set()
@@ -198,7 +230,7 @@ def gen_contracts(contract, source, target):
                     lines.append("")
                 field_doc = field.get("comment") or field["name"]
                 lines.append(f"        /// <summary>\n        /// {field_doc}\n        /// </summary>")
-                lines.append(f"        [{attribute}(\"{camel(field['name'])}\")]")
+                lines.append(f"        [{attribute}(\"{json_key(field)}\")]")
                 lines.append(f"        public {cs_type(field)} {field['name']} {{ get; set; }}")
 
             if not fields:

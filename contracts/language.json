@@ -1,0 +1,31 @@
+{
+  "api": "LanguageApi",
+  "title": "语言切换（示例：把已有接口结构转成契约）",
+  "endpoints": [
+    {
+      "id": "SetLanguage",
+      "method": "POST",
+      "path": "/api/language",
+      "summary": "上报当前语言，返回各语言可用标记（bool 顺序与 SUPPORTED_LANGUAGES 一致）",
+      "request": {
+        "type": "SetLanguageReq",
+        "fields": [
+          {
+            "name": "CurrentLanguage",
+            "type": "string",
+            "json": "currentlanguage",
+            "comment": "语言代码，可选值 en/zh/de/es/fr/id/it/pt/tr/vi"
+          }
+        ]
+      },
+      "response": {
+        "type": "SetLanguageRes",
+        "fields": [
+          { "name": "Code", "type": "int", "comment": "业务码：200 成功" },
+          { "name": "Msg", "type": "string", "comment": "success / 失败原因" },
+          { "name": "Data", "type": "bool[]", "comment": "各语言可用标记，顺序与 SUPPORTED_LANGUAGES 一致" }
+        ]
+      }
+    }
+  ]
+}
