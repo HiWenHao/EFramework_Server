@@ -85,6 +85,18 @@ def repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def default_client_dir(root):
+    """自动探测 Unity 工程：<root>/../../Unity/EFramework_Package/EF_Unity/Assets/NetApi/Generated。
+
+    找不到就返回 None —— 绝不能"猜一个路径然后创建它"，那样会安静地把代码写到平行目录里，
+    而且工具还报成功（本脚本第一版就踩过：算成了 <root>/../Unity，于是生成了 D:/_Projects/CSharp/Unity/...）。
+    """
+    unity_root = os.path.normpath(os.path.join(root, "..", "..", "Unity", "EFramework_Package", "EF_Unity"))
+    if not os.path.isdir(os.path.join(unity_root, "Assets")):
+        return None
+    return os.path.join(unity_root, "Assets", "NetApi", "Generated")
+
+
 def load_contract(path):
     with open(path, encoding="utf-8-sig") as handle:
         contract = json.load(handle)
@@ -261,6 +273,8 @@ def gen_endpoints(contract, source):
         lines.append("            });")
         lines.append("")
 
+    if lines and lines[-1] == "":
+        lines.pop()
     lines.append("        }")
     lines.append("    }")
     lines.append("}")
@@ -315,11 +329,14 @@ def gen_client(contract, source):
             lines.append(f"            return HttpManager.Instance.PostJsonAsync<{request['type']}, {response_type}>(")
             lines.append(f"                _baseUrl + {api}Routes.{endpoint['id']}, request, null, null, null, cancellationToken);")
 
-        lines.append("        }\n")
+        lines.append("        }")
+        lines.append("")
 
+    if lines and lines[-1] == "":
+        lines.pop()
     lines.append("    }")
     lines.append("}")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 def normalize(text):
@@ -370,8 +387,12 @@ def main(argv):
         print("[ERROR] no contract files", file=sys.stderr)
         return 1
 
-    client_dir = args.out_client or os.path.join(
-        os.path.dirname(root), "Unity", "EFramework_Package", "EF_Unity", "Assets", "NetApi", "Generated")
+    client_dir = args.out_client or default_client_dir(root)
+    client_available = bool(client_dir)
+
+    if not client_available:
+        print("[WARN] Unity project not found; client code will be skipped.\n"
+              "       pass --out-client <dir> to generate it explicitly.", file=sys.stderr)
 
     drifted = []
     for path in contract_paths:
@@ -382,9 +403,11 @@ def main(argv):
         outputs = [
             (os.path.join(args.out_server, f"{api}.Contracts.g.cs"), gen_contracts(contract, source, "server")),
             (os.path.join(args.out_server, f"{api}.Endpoints.g.cs"), gen_endpoints(contract, source)),
-            (os.path.join(client_dir, f"{api}.Contracts.g.cs"), gen_contracts(contract, source, "client")),
-            (os.path.join(client_dir, f"{api}.Client.g.cs"), gen_client(contract, source)),
         ]
+
+        if client_available:
+            outputs.append((os.path.join(client_dir, f"{api}.Contracts.g.cs"), gen_contracts(contract, source, "client")))
+            outputs.append((os.path.join(client_dir, f"{api}.Client.g.cs"), gen_client(contract, source)))
 
         print(f"\n{source}  (api={api}, endpoints={len(contract['endpoints'])})")
         for out_path, content in outputs:
@@ -397,11 +420,13 @@ def main(argv):
         if drifted:
             print(f"\n[FAIL] {len(drifted)} file(s) out of date; re-run without --check")
             return 1
-        print("\n[OK] generated code is up to date")
+        suffix = "" if client_available else " (client skipped)"
+        print(f"\n[OK] generated code is up to date{suffix}")
         return 0
 
+    client_text = os.path.relpath(client_dir, root) if client_available else "(skipped)"
     print(f"\n[DONE] {len(contract_paths)} contract(s); server -> {os.path.relpath(args.out_server, root)}, "
-          f"client -> {os.path.relpath(client_dir, root)}")
+          f"client -> {client_text}")
     return 0
 
 

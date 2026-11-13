@@ -72,7 +72,6 @@ namespace EasyFramework.Http.Api.Generated
                 VersionRes response = await api.VersionAsync(cancellationToken).ConfigureAwait(false);
                 return response == null ? Results.StatusCode(StatusCodes.Status500InternalServerError) : Results.Ok(response);
             });
-
         }
     }
 }
