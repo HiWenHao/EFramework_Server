@@ -97,6 +97,48 @@ namespace EFramework.Tests.Tests
                 Assert.Equal(0, packet.PayloadLength, "payload length");
                 Assert.True(packet.Payload == null, "payload stays null for an empty frame");
             });
+
+            runner.Run("Decode rejects a payload length that exceeds the message slice", () =>
+            {
+                // 复用大缓冲：真实消息 20B，但帧头声称有 100B 载荷，且这个声称在缓冲容量内「放得下」
+                byte[] frame = MessagePipe.Encode(1001, 0, new byte[8]);
+                var buffer = new byte[256];
+                Buffer.BlockCopy(frame, 0, buffer, 0, frame.Length);
+
+                buffer[8] = 100;
+                buffer[9] = 0;
+                buffer[10] = 0;
+                buffer[11] = 0;
+
+                Assert.True(!MessagePipe.TryDecode(buffer, 0, frame.Length, out _, out _, out _, out _),
+                    "declared payload beyond the message slice must be rejected");
+                Assert.True(!MessagePipe.TryDecodePacket(1, buffer, 0, frame.Length, out _),
+                    "packet decode must reject it too");
+
+                // 旧重载按「整块缓冲视为一条消息」校验，因此同一份数据是合法的 —— 这正是复用缓冲的会话
+                // 必须显式传消息长度的原因（否则会读上一条消息的残留字节）
+                Assert.True(MessagePipe.TryDecode(buffer, out _, out _, out _, out _),
+                    "the whole-buffer overload cannot tell the difference: that is why the slice overload exists");
+            });
+
+            runner.Run("Encode into a destination buffer reports overflow instead of throwing", () =>
+            {
+                var payload = new byte[4];
+                var tooSmall = new byte[MessagePipe.HeaderSize];
+
+                Assert.True(!MessagePipe.Encode(1, 0, payload, tooSmall, out int rejected), "header-only buffer is too small");
+                Assert.Equal(0, rejected, "nothing is reported as written on failure");
+
+                var exact = new byte[MessagePipe.HeaderSize + payload.Length];
+                Assert.True(MessagePipe.Encode(1, 7, payload, exact, out int written), "exact fit must succeed");
+                Assert.Equal(MessagePipe.HeaderSize + payload.Length, written, "written length");
+
+                Assert.True(MessagePipe.TryDecode(exact, out int opcode, out int rpcId, out _, out int length),
+                    "the encoded frame must decode back");
+                Assert.Equal(1, opcode, "opcode");
+                Assert.Equal(7, rpcId, "rpcId");
+                Assert.Equal(payload.Length, length, "payload length");
+            });
         }
 
         #endregion

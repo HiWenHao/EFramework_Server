@@ -31,7 +31,7 @@
     · 升级 EF 时改这一处；tools/sync-protocol.py 的校验模式会检查两者是否漂移。
   -->
   <PropertyGroup>
-    <Version>0.0.1</Version>
+    <Version>0.0.2</Version>
   </PropertyGroup>
 
 </Project>

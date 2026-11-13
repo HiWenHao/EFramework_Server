@@ -53,6 +53,9 @@ namespace EasyFramework.Server.Sessions
         // 单条完整消息的初始读取缓冲倍数（超出时自动扩容，扩容不会丢消息）
         private const int InitialReceiveBufferMultiplier = 4;
 
+        // 出站帧缓冲初始容量（按需扩容；复用后每条出站消息不再新建数组）
+        private const int MinFrameBufferSize = 256;
+
         private readonly Kcp _kcp;
         private readonly Transport.IServerTransport _transport;
         private readonly IPEndPoint _remoteEndPoint;
@@ -67,6 +70,9 @@ namespace EasyFramework.Server.Sessions
         private readonly ConcurrentQueue<OutboundMessage> _outbox = new ConcurrentQueue<OutboundMessage>();
 
         private byte[] _kcpRecvBuffer;
+
+        // 出站复用帧缓冲（按需扩容）：每条消息只做一次拷贝，不再每条新建数组
+        private byte[] _frameBuffer;
         private double _lastReceiveTime;
         private long _receivedDatagrams;
         private long _receivedMessages;
@@ -251,7 +257,8 @@ namespace EasyFramework.Server.Sessions
 
                 _receivedMessages++;
 
-                if (!MessagePipe.TryDecodePacket(SessionId, _kcpRecvBuffer, out NetPacket packet))
+                // 传真实消息长度而不是缓冲容量：伪造的超长 payloadLength 会被拒，而不是读出上一条的残留
+                if (!MessagePipe.TryDecodePacket(SessionId, _kcpRecvBuffer, 0, size, out NetPacket packet))
                 {
                     if (_logger?.IsEnabled(LogLevel.Warn) == true)
                     {
@@ -316,15 +323,29 @@ namespace EasyFramework.Server.Sessions
         // 真正的发送：只允许泵线程调用
         private void SendCore(int opcode, int rpcId, byte[] payload)
         {
-            byte[] frame = MessagePipe.Encode(opcode, rpcId, payload);
+            // 复用帧缓冲：编码直接写进去，KCP 再拷进段，全程不新建数组
+            int required = MessagePipe.HeaderSize + (payload?.Length ?? 0);
+            if (_frameBuffer == null || _frameBuffer.Length < required)
+                _frameBuffer = new byte[Math.Max(required, MinFrameBufferSize)];
+
+            if (!MessagePipe.Encode(opcode, rpcId, payload, _frameBuffer, out int length))
+            {
+                if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                {
+                    _logger.Warn($"[SESSION {SessionId}] frame encode failed (opcode={opcode}, " +
+                                 $"need={required}B, buffer={_frameBuffer.Length}B)");
+                }
+
+                return;
+            }
 
             // KCP 在下一个节拍统一冲刷，故本条消息的实际发出延迟 <= ServerOptions.TickIntervalMs
-            int result = _kcp.Send(frame, 0, frame.Length);
+            int result = _kcp.Send(_frameBuffer, 0, length);
             if (result < 0)
             {
                 if (_logger?.IsEnabled(LogLevel.Warn) == true)
                 {
-                    _logger.Warn($"[SESSION {SessionId}] send failed (opcode={opcode}, {frame.Length}B, kcp={result})");
+                    _logger.Warn($"[SESSION {SessionId}] send failed (opcode={opcode}, {length}B, kcp={result})");
                 }
 
                 return;

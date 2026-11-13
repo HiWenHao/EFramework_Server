@@ -80,7 +80,12 @@ EFramework_Server/
 | RPC | `Call<T>` 发 rpcId≠0 | 回包时回显同一 rpcId | 客户端按 rpcId 配对 |
 | 序列化 | 无内置，需注入 | 默认 `JsonMessageSerializer` | 两侧必须同构 |
 | Opcode | `1~999` 框架 / `1000+` 业务 | 相同 | `NetOpcode` |
-| 版本 | `package.json` 的 `0.0.1` | `0.0.1`（`Directory.Build.props`） | 服务端版本跟着包走，不另立版本线 |
+| 版本 | `package.json` 的 `0.0.2` | `0.0.2`（`Directory.Build.props`） | 服务端版本跟着包走，不另立版本线 |
+
+> **帧解码有两个重载**：`TryDecodePacket(sessionId, frame, out packet)` 把整块缓冲当作一条消息（旧行为，
+> 保留兼容）；`TryDecodePacket(sessionId, frame, offset, length, out packet)` 只认指定消息切片、按<b>消息长度</b>
+> 校验载荷。**复用收包缓冲的会话必须用后者** —— 否则对端伪造一个超长 `payloadLength`，解码方会把上一条消息
+> 残留在缓冲里的字节当成载荷读出去。客户端 `NetworkSession` 与服务端 `NetSession` 都已改用切片重载。
 
 ### 关键设计：为什么按端点而不是 conv 建会话
 
@@ -223,6 +228,17 @@ server.Post(s => s.Broadcast(ServerNoticeOpcode, payload));
 
 排查工具：`NetSession.DebugInfo`（KCP 内部水位）、`NetSession.WaitSnd`（持续增长 = 对端不回 ACK）、
 `ServerDispatcher.HandledCount / FailedCount`、`NetServer.RejectedByLimit`。
+
+### 收发路径的分配
+
+| 环节 | 分配 | 说明 |
+|---|---|---|
+| 入站 UDP 缓冲 | **0** | 传输层用 `ArrayPool` 按包长取，路由器用完在 `finally` 里归还 |
+| 入站帧解码 | 1 个载荷数组 | `NetPacket.Payload` 是独立拷贝，保证 handler 可以安全持有（不改这条语义） |
+| 出站帧编码 | **0** | 复用会话级帧缓冲：`MessagePipe.Encode(..., destination, out length)` |
+
+也就是说稳态下每条消息只剩「入站载荷拷贝」这一次小分配。要连它一起消掉，就得把 `NetPacket.Payload`
+改成「借用会话缓冲、下一条消息到达即失效」，属于语义破坏性变更 —— 等压测数据显示它占比可观时再做。
 
 ## 扩展点
 

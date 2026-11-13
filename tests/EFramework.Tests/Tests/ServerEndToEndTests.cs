@@ -233,6 +233,23 @@ namespace EFramework.Tests.Tests
                     $"expected InvalidOperationException, got {captured?.GetType().Name ?? "no exception"}");
             });
 
+            runner.Run("A payload larger than the frame buffer survives buffer growth", () =>
+            {
+                using var fixture = new ServerFixture();
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                // 4000B 远大于会话出站帧缓冲的初始容量（256B），会触发扩容后再编码
+                string big = new string('x', 4000);
+                client.Send(EchoReqOpcode, 9, Json.Serialize(new TestEchoReq { Content = big }));
+
+                NetPacket response = client.WaitFor(
+                    packet => packet.Opcode == EchoResOpcode && packet.RpcId == 9, "big echo response", 5000);
+
+                var body = Json.Deserialize<TestEchoRes>(response.Payload, 0, response.PayloadLength);
+                Assert.NotNull(body, "response body");
+                Assert.Equal(big.Length, body.Content.Length, "big payload must survive the buffer growth intact");
+            });
+
             runner.Run("Invalid KCP tuning fails at construction, not per packet", () =>
             {
                 var logger = new ConsoleServerLogger { Level = LogLevel.None };
