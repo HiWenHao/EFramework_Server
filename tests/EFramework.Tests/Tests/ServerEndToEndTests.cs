@@ -233,6 +233,22 @@ namespace EFramework.Tests.Tests
                     $"expected InvalidOperationException, got {captured?.GetType().Name ?? "no exception"}");
             });
 
+            runner.Run("Invalid KCP tuning fails at construction, not per packet", () =>
+            {
+                var logger = new ConsoleServerLogger { Level = LogLevel.None };
+                var dispatcher = new ServerDispatcher(logger, Json);
+
+                // 若不校验，Mtu 非法会在「首个数据报到达、会话构造」时每包抛一次异常
+                Assert.Throws<ArgumentOutOfRangeException>(() =>
+                {
+                    using var server = new NetServer(
+                        new ServerOptions { Port = 0 },
+                        dispatcher,
+                        logger: logger,
+                        kcpSettings: new KcpSettings { Mtu = 1 });
+                }, "Mtu=1 must be rejected in the constructor");
+            });
+
             runner.Run("StopAsync closes live sessions with a reason", () =>
             {
                 var reasons = new List<string>();

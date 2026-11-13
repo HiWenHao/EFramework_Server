@@ -50,6 +50,25 @@ namespace EFramework.Tests.Harness
             }
         }
 
+        public static TException Throws<TException>(Action action, string message) where TException : Exception
+        {
+            try
+            {
+                action();
+            }
+            catch (TException expected)
+            {
+                return expected;
+            }
+            catch (Exception other)
+            {
+                throw new InvalidOperationException(
+                    $"{message} (expected {typeof(TException).Name}, got {other.GetType().Name}: {other.Message})");
+            }
+
+            throw new InvalidOperationException($"{message} (expected {typeof(TException).Name}, nothing was thrown)");
+        }
+
         #endregion
     }
 }

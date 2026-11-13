@@ -171,6 +171,14 @@ KCP 调参走 `KcpSettings`，**默认值与客户端 `NetworkSettings` 完全�
 （`Mtu=512`、`WndSize=256/256`、`NoDelay(1,10,2,1)`、`DeadLink=20`）。两侧 MTU/窗口必须一致，
 否则会出现"大消息卡死"或"带宽跑不满"。
 
+`KcpSettings` 的两条约束：
+
+- **构造期校验**：非法值（`Mtu` 越界、窗口 &lt;1 或 &gt;65535、`Interval`/`DeadLink` 为 0）会在
+  `new NetServer(...)` 时直接抛 `ArgumentOutOfRangeException`，而不是等首个数据报到达才在会话构造里
+  每包抛一次异常。窗口在段头里是 uint16，超过 65535 会被静默截断成错误的窗口通告——这类值必须拦。
+- **`KcpSettings.Default` 是模板，不是全局配置**：宿主在构造时会 `Clone()` 一份自用，之后改
+  `Default.Mtu` 不会影响已建服务端；要自定义就 `KcpSettings.Default.Clone()` 后改副本再传入。
+
 ## 线程模型
 
 所有 KCP 状态与业务处理器都跑在**唯一一条消息泵线程**上，因此会话与业务状态无需加锁。代价是必须遵守以下三条：

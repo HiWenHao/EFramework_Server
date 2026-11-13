@@ -140,6 +140,37 @@ namespace EFramework.Tests.Tests
 
                 Assert.True(sender.IsDead, "link should be marked dead after DeadLink retransmits");
             });
+
+            runner.Run("KcpSettings rejects values KCP would silently ignore or truncate", () =>
+            {
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { Mtu = 0 }.Validate(), "Mtu 0");
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { Mtu = 2000 }.Validate(), "Mtu 2000");
+
+                // 窗口在段头里是 uint16，70000 会被截断成错误的窗口通告
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { RcvWnd = 70000 }.Validate(), "RcvWnd 70000");
+
+                // 这几个值 KCP 会静默保留默认值，配置写错将毫无反馈
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { SndWnd = 0 }.Validate(), "SndWnd 0");
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { Interval = 0 }.Validate(), "Interval 0");
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { DeadLink = 0 }.Validate(), "DeadLink 0");
+                Assert.Throws<ArgumentOutOfRangeException>(() => new KcpSettings { FastResend = -1 }.Validate(), "FastResend -1");
+
+                // 默认值必须通过
+                new KcpSettings().Validate();
+            });
+
+            runner.Run("Clone isolates the shared default from later mutation", () =>
+            {
+                KcpSettings template = new KcpSettings();
+                KcpSettings copy = template.Clone();
+
+                template.Mtu = 100;
+                template.RcvWnd = 8;
+
+                Assert.Equal(512, copy.Mtu, "clone keeps its own MTU");
+                Assert.Equal(256, copy.RcvWnd, "clone keeps its own window");
+                Assert.Equal(100, template.Mtu, "template keeps the mutation (proves they are separate objects)");
+            });
         }
 
         // 把管道里的数据报全部喂给接收方，并推进它

@@ -130,7 +130,12 @@ namespace EasyFramework.Server
             _transport = transport ?? new UdpServerTransport(_options, _logger);
             _handshakeValidator = handshakeValidator ?? new AcceptAllHandshakeValidator();
 
-            _router = new SessionRouter(_options, kcpSettings ?? KcpSettings.Default, _transport, _dispatcher, _logger,
+            // 参数在构造期校验并持有副本：既让配置错误立刻暴露，也避免外部后续改动影响已建会话
+            KcpSettings tuning = kcpSettings ?? KcpSettings.Default;
+            tuning.Validate();
+            tuning = tuning.Clone();
+
+            _router = new SessionRouter(_options, tuning, _transport, _dispatcher, _logger,
                 RaiseSessionOpened, RaiseSessionClosed);
             _pumpWork = new PumpWorkQueue(_logger);
             _loop = new ServerLoop(_options, _transport, _router, _pumpWork, _logger);
