@@ -73,6 +73,14 @@ namespace EasyFramework.Server.Sessions
 
         // 出站复用帧缓冲（按需扩容）：每条消息只做一次拷贝，不再每条新建数组
         private byte[] _frameBuffer;
+
+        // 会话保护上限（出站积压 / 入站速率）
+        private readonly SessionLimits _limits;
+
+        // 入站限流的固定窗口计数
+        private int _rateWindowMessages;
+        private double _rateWindowStart;
+        private long _droppedMessages;
         private double _lastReceiveTime;
         private long _receivedDatagrams;
         private long _receivedMessages;
@@ -140,6 +148,12 @@ namespace EasyFramework.Server.Sessions
         public long SentMessages => _sentMessages;
 
         /// <summary>
+        /// 累计因入站限流被丢弃的消息数
+        /// <para>Messages dropped by the inbound rate limit</para>
+        /// </summary>
+        public long DroppedMessages => _droppedMessages;
+
+        /// <summary>
         /// 是否已关闭
         /// <para>Whether the session is closed</para>
         /// </summary>
@@ -176,11 +190,13 @@ namespace EasyFramework.Server.Sessions
         /// <param name="remoteEndPoint">远端端点<para>Remote endpoint</para></param>
         /// <param name="transport">传输层<para>Transport</para></param>
         /// <param name="settings">KCP 调参数<para>KCP tuning</para></param>
+        /// <param name="limits">会话保护上限<para>Session protection limits</para></param>
         /// <param name="onPacket">完整消息回调（在消息泵线程上同步调用）<para>Complete-message callback (invoked synchronously on the pump thread)</para></param>
         /// <param name="logger">日志输出<para>Log output</para></param>
         /// <param name="now">当前单调时刻（秒）<para>Current monotonic timestamp in seconds</para></param>
         internal NetSession(int sessionId, uint conv, IPEndPoint remoteEndPoint, Transport.IServerTransport transport,
-            KcpSettings settings, Action<NetSession, NetPacket> onPacket, IServerLogger logger, double now)
+            KcpSettings settings, SessionLimits limits, Action<NetSession, NetPacket> onPacket, IServerLogger logger,
+            double now)
         {
             SessionId = sessionId;
             Conv = conv;
@@ -189,7 +205,9 @@ namespace EasyFramework.Server.Sessions
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _onPacket = onPacket;
             _logger = logger;
+            _limits = limits;
             _lastReceiveTime = now;
+            _rateWindowStart = now;
 
             // 会话由路由在消息泵线程上创建，这里记下的就是唯一的「可写 KCP」线程
             _pumpThreadId = Environment.CurrentManagedThreadId;
@@ -268,6 +286,9 @@ namespace EasyFramework.Server.Sessions
                     continue;
                 }
 
+                // 限流：超限直接丢弃而不是排队 —— 排队等于把刷包的压力转嫁给其他玩家
+                if (!TryConsumeReceiveBudget(now)) continue;
+
                 _onPacket?.Invoke(this, packet);
 
                 // 处理器可能已关闭本会话，后续消息不再派发
@@ -323,6 +344,21 @@ namespace EasyFramework.Server.Sessions
         // 真正的发送：只允许泵线程调用
         private void SendCore(int opcode, int rpcId, byte[] payload)
         {
+            // 出站积压保护：对端长时间不 ACK 时，Kcp.Send 不会失败，只会让待发队列一直变长。
+            // 广播一次就往每个死会话里堆一份 —— 这里把它变成「及时判定不可用并回收」。
+            int backlogCap = _limits.MaxSendBacklogSegments;
+            if (backlogCap > 0 && _kcp.WaitSnd >= backlogCap)
+            {
+                string reason = $"Send backlog overflow ({_kcp.WaitSnd} >= {backlogCap} segments)";
+                if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                {
+                    _logger.Warn($"[SESSION {SessionId}] {reason}, closing as unreachable");
+                }
+
+                Close(reason);
+                return;
+            }
+
             // 复用帧缓冲：编码直接写进去，KCP 再拷进段，全程不新建数组
             int required = MessagePipe.HeaderSize + (payload?.Length ?? 0);
             if (_frameBuffer == null || _frameBuffer.Length < required)
@@ -345,13 +381,42 @@ namespace EasyFramework.Server.Sessions
             {
                 if (_logger?.IsEnabled(LogLevel.Warn) == true)
                 {
-                    _logger.Warn($"[SESSION {SessionId}] send failed (opcode={opcode}, {length}B, kcp={result})");
+                    // -2 = 超过 255 个分片（约 124KB 以上），-3 = 分片数超过对端接收窗口
+                    string why = result == -2 ? "message too large (>255 fragments)" : "fragments exceed peer window";
+                    _logger.Warn($"[SESSION {SessionId}] send rejected (opcode={opcode}, {length}B): {why}, dropped");
                 }
 
                 return;
             }
 
             _sentMessages++;
+        }
+
+        // 入站限流：固定窗口计数，超限丢弃并计数；只在首次丢弃时告警，避免刷屏
+        private bool TryConsumeReceiveBudget(double now)
+        {
+            int limit = _limits.MaxMessagesPerSecond;
+            if (limit <= 0) return true;
+
+            if (now - _rateWindowStart >= 1d)
+            {
+                _rateWindowStart = now;
+                _rateWindowMessages = 0;
+            }
+
+            if (_rateWindowMessages < limit)
+            {
+                _rateWindowMessages++;
+                return true;
+            }
+
+            _droppedMessages++;
+            if (_droppedMessages == 1 && _logger?.IsEnabled(LogLevel.Warn) == true)
+            {
+                _logger.Warn($"[SESSION {SessionId}] receive rate limit {limit}/s hit; further messages are dropped until the window resets");
+            }
+
+            return false;
         }
 
         // 把跨线程投递的消息搬进 KCP（必须在冲刷之前）

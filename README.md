@@ -9,7 +9,7 @@
 - 同一进程内还跑一个 **HTTP 管理面**（Kestrel），与游戏服只通过 `Post` / `PostAsync` 协作。
 
 > **想搞懂"为什么这么设计"** → 读 [`docs/design-decisions.md`](docs/design-decisions.md)。
-> 12 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
+> 13 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
 > 面向从客户端转服务端的工程师。代码能抄，判断力抄不了——代价那一段才是重点。
 
 ## 已验证结论
@@ -185,7 +185,14 @@ dispatcher.Register<LoginReq, LoginHandler>(new LoginHandler(logger));
 | `MaxSessions` | `4096` | 超出后新端点数据报直接丢弃（防扫描） |
 | `RequireHandshake` | `false` | `true` 时未通过握手的会话除握手包外一律丢弃 |
 | `ReceiveQueueCapacity` | `8192` | 内核 → 泵的缓冲，满则丢新包并计数 |
+| `MaxSendBacklogSegments` | `1024` | 单会话出站积压上限（KCP 段），超限即判定不可用并回收；`0` 关闭 |
+| `MaxMessagesPerSecond` | `512` | 单会话入站速率上限；超限丢弃并计数；`0` 关闭 |
 | `LogLevel` | `Info` | `Debug` 会打印每会话/每包细节 |
+
+两个会话级上限是「隔离」的最后一道：`Kcp.Send` 对发送队列长度没有上限，慢客户端或已掉线的客户端
+只会让待发队列一直变长，而广播一次就往每个死会话里堆一份。`MaxSendBacklogSegments` 把它变成
+"及时判定不可用并回收"；`MaxMessagesPerSecond` 防止单个客户端刷包把泵的时间片吃光（超限直接丢弃，
+排队等于把压力转嫁给其他玩家）。可观测：`/sessions` 的 `waitSnd` 与 `dropped`。
 
 KCP 调参走 `KcpSettings`，**默认值与客户端 `NetworkSettings` 完全一致**
 （`Mtu=512`、`WndSize=256/256`、`NoDelay(1,10,2,1)`、`DeadLink=20`）。两侧 MTU/窗口必须一致，

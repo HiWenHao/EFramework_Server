@@ -108,6 +108,7 @@ namespace EasyFramework.Http
                         Received = session.ReceivedMessages,
                         Sent = session.SentMessages,
                         WaitSnd = session.WaitSnd,
+                        Dropped = session.DroppedMessages,
                     };
                 }
 

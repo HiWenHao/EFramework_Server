@@ -45,6 +45,7 @@ namespace EasyFramework.Server.Sessions
 
         private readonly ServerOptions _options;
         private readonly KcpSettings _settings;
+        private readonly SessionLimits _limits;
         private readonly Transport.IServerTransport _transport;
         private readonly ServerDispatcher _dispatcher;
         private readonly IServerLogger _logger;
@@ -91,6 +92,8 @@ namespace EasyFramework.Server.Sessions
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _settings = settings ?? KcpSettings.Default;
+            // 会话上限从宿主参数派生一次，所有会话共用同一份只读值
+            _limits = new SessionLimits(options.MaxSendBacklogSegments, options.MaxMessagesPerSecond);
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _logger = logger;
@@ -257,7 +260,8 @@ namespace EasyFramework.Server.Sessions
         // 建立会话并按握手策略设置初始状态
         private NetSession Create(IPEndPoint remoteEndPoint, uint conv, double now)
         {
-            var session = new NetSession(_nextSessionId++, conv, remoteEndPoint, _transport, _settings, HandlePacket, _logger, now)
+            var session = new NetSession(_nextSessionId++, conv, remoteEndPoint, _transport, _settings, _limits,
+                HandlePacket, _logger, now)
             {
                 State = _options.RequireHandshake ? NetSessionState.Handshaking : NetSessionState.Ready,
             };

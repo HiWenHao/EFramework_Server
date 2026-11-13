@@ -111,6 +111,12 @@ namespace EasyFramework.Http
         /// </summary>
         public int WaitSnd { get; set; }
 
+        /// <summary>
+        /// 因入站限流被丢弃的消息数
+        /// <para>Messages dropped by the inbound rate limit</para>
+        /// </summary>
+        public long Dropped { get; set; }
+
         #endregion
     }
 }

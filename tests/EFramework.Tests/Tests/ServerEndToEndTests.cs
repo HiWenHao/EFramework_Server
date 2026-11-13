@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
@@ -297,6 +298,72 @@ namespace EFramework.Tests.Tests
                 Assert.Equal(notice.Length, received.PayloadLength, "broadcast payload length");
                 Assert.Equal("admin-notice", Encoding.UTF8.GetString(received.Payload, 0, received.PayloadLength),
                     "broadcast payload");
+            });
+
+            runner.Run("Inbound rate limit drops excess messages but keeps the session alive", () =>
+            {
+                using var fixture = new ServerFixture(options => options.MaxMessagesPerSecond = 10);
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                // 40 个 Ping 同时在途，必然落在同一个 1 秒窗口内
+                for (int i = 0; i < 40; i++)
+                {
+                    client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes((long)i));
+                }
+
+                int answered = 0;
+                var stopwatch = Stopwatch.StartNew();
+                while (stopwatch.ElapsedMilliseconds < 800)
+                {
+                    // Drain 的返回值是"取出了几条"，这里只需要 Pong 条数，所以在回调里计数
+                    client.Drain(packet =>
+                    {
+                        if (packet.Opcode == NetOpcode.Pong) answered++;
+                    });
+
+                    Thread.Sleep(5);
+                }
+
+                Assert.True(answered <= 10, $"at most 10 pongs may be produced within the window, got {answered}");
+                Assert.True(answered > 0, "messages inside the budget must still be handled");
+                Assert.Equal(1, fixture.Server.SessionCount, "the session must survive rate limiting");
+
+                // 窗口重置后应恢复正常通信
+                Thread.Sleep(1100);
+                client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes(999L));
+                client.WaitFor(packet => packet.Opcode == NetOpcode.Pong &&
+                                         packet.PayloadLength >= 8 &&
+                                         BitConverter.ToInt64(packet.Payload, 0) == 999L,
+                    "pong after the rate window resets", 3000);
+            });
+
+            runner.Run("Outbound backlog cap closes an unresponsive session", () =>
+            {
+                using var fixture = new ServerFixture(options => options.MaxSendBacklogSegments = 2);
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                // 建会话并让它把已有数据都 ack 掉
+                client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes(1L));
+                client.WaitFor(NetOpcode.Pong);
+
+                var closedReasons = new ConcurrentQueue<string>();
+                fixture.Server.SessionClosed += (session, reason) => closedReasons.Enqueue(reason);
+
+                var logger = new ConsoleServerLogger { Level = LogLevel.None };
+                var bridge = new GameServerBridge(fixture.Server, logger);
+
+                // 客户端此后不再 Pump（不回 ACK），广播让待发队列一路堆到上限
+                for (int i = 0; i < 6; i++)
+                {
+                    bridge.Broadcast(1003, new byte[] { (byte)i });
+                    Thread.Sleep(30); // 每次 Post 至少跨一个节拍
+                }
+
+                Assert.True(WaitUntil(() => !closedReasons.IsEmpty, 3000), "backlog cap must close the session");
+
+                string reason = closedReasons.TryPeek(out string first) ? first : string.Empty;
+                Assert.True(reason.Contains("backlog", StringComparison.OrdinalIgnoreCase),
+                    $"close reason should mention the backlog, got: {reason}");
             });
 
             runner.Run("StopAsync closes live sessions with a reason", () =>
