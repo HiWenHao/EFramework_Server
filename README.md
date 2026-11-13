@@ -8,6 +8,9 @@
 - 单线程消息泵：所有 KCP 状态与业务处理器跑在同一线程，会话无需加锁。
 - 同一进程内还跑一个 **HTTP 管理面**（Kestrel），与游戏服只通过 `Post` / `PostAsync` 协作。
 
+> **不知道怎么验证？** → 读 [`docs/testing.md`](docs/testing.md)。
+> 四层测试面（dotnet 用例 → 命令行探针 → Unity 测试面板 → 压测）+ 一张「现象 → 原因」排查表。
+>
 > **想搞懂"为什么这么设计"** → 读 [`docs/design-decisions.md`](docs/design-decisions.md)。
 > 15 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
 > 面向从客户端转服务端的工程师。代码能抄，判断力抄不了——代价那一段才是重点。
@@ -44,12 +47,16 @@ dotnet run --project src/EFramework.App -- --port 7801 --http-port 8081 --verbos
 # 3. 手工探针（另一个终端）：Ping/Pong + 业务回声
 dotnet run --project tests/EFramework.Tests -- probe 127.0.0.1 7777
 
-# 4. 管理面（HTTP）
+# 4. Unity 端：打开 EF_Unity 工程 → 任意场景按 Play
+#    会自带一个测试面板（Assets/NetSmokeTest），填 127.0.0.1 + 7777 点 Connect/Ping/Echo
+#    详见 docs/testing.md L3
+
+# 5. 管理面（HTTP）
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/sessions
 curl -X POST "http://127.0.0.1:8080/admin/broadcast?opcode=1003" --data-binary "hello"
 
-# 5. 跑全部验证用例
+# 6. 跑全部验证用例
 dotnet run --project tests/EFramework.Tests
 ```
 
