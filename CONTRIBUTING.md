@@ -114,6 +114,11 @@ Kcp.cs  MessagePipe.cs  NetOpcode.cs  NetProtocolException.cs
 - 对外用法、客户端对接方式
 - 协议相关事实（会话建立时机、握手格式、RPC 约定）
 
+**架构级决策**（换协议、改线程模型、拆进程、加缓存层）另需在
+[`docs/design-decisions.md`](docs/design-decisions.md) 追加一节 `D<n>`，按「问题 → 备选 → 选择 → 代价」
+四段写；代码里引用写「见 docs/design-decisions.md D3」，不要复述。代价那一段不能省 ——
+省了就变成宣传稿，三个月后没人记得为什么这么选。
+
 ## 8. 持续集成
 
 `.github/workflows/ci.yml` 在 push 到 `master` 与 PR 时执行 Release 编译 + 全量用例。

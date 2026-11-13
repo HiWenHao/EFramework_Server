@@ -6,6 +6,11 @@
 - 协议层逐字节复用客户端源码（`Kcp.cs` / `MessagePipe.cs` / `NetOpcode.cs` / `NetProtocolException.cs`），不做"重新实现"。
 - 零第三方依赖（无 NuGet 包），日志 / 序列化 / 传输全部走接口，可替换。
 - 单线程消息泵：所有 KCP 状态与业务处理器跑在同一线程，会话无需加锁。
+- 同一进程内还跑一个 **HTTP 管理面**（Kestrel），与游戏服只通过 `Post` / `PostAsync` 协作。
+
+> **想搞懂"为什么这么设计"** → 读 [`docs/design-decisions.md`](docs/design-decisions.md)。
+> 12 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
+> 面向从客户端转服务端的工程师。代码能抄，判断力抄不了——代价那一段才是重点。
 
 ## 已验证结论
 
