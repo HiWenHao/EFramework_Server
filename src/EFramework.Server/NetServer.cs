@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Reflection;
 using System.Threading;
@@ -104,6 +105,18 @@ namespace EasyFramework.Server
         /// (injected by Directory.Build.props)</para>
         /// </summary>
         public static string Version { get; } = ResolveVersion();
+
+        /// <summary>
+        /// 当前会话快照（<b>仅泵线程可安全调用</b>；其它线程请用 <see cref="PostAsync{T}"/> 取一致快照）
+        /// <para>Snapshot of the current sessions (<b>pump thread only</b>; other threads should use
+        /// <see cref="PostAsync{T}"/> for a consistent view)</para>
+        /// </summary>
+        /// <remarks>
+        /// 每次访问都会新建一个数组，属管理面接口（HTTP 健康检查/后台列表）用，不要放在每帧路径上。
+        /// <para>Each access allocates an array; it is a management-plane API (health checks, admin listings)
+        /// and must not sit on a per-frame path.</para>
+        /// </remarks>
+        public IReadOnlyList<NetSession> Sessions => _router.Snapshot();
 
         #endregion
 
@@ -229,6 +242,49 @@ namespace EasyFramework.Server
 
             NetServer self = this;
             _pumpWork.Post(() => work(self));
+        }
+
+        /// <summary>
+        /// 把一段「取值」工作投递到消息泵线程执行，并等待它的返回值（任意线程可调用）。
+        /// <para>Post a query onto the pump thread and await its result (safe from any thread).</para>
+        /// </summary>
+        /// <remarks>
+        /// 用于管理面接口（HTTP 健康检查、后台会话列表）：这些数据只有泵线程能安全读取，
+        /// 又必须同步返回给调用方。<see cref="Post"/> 是单向投递，取不到返回值，故补这个方法。
+        /// 代价是一次任务分配 + 最多一个节拍的等待，不适合放在高频路径上。
+        /// <para>For management-plane reads (health checks, admin session listings) whose state is
+        /// pump-thread-owned but must be returned synchronously. Costs one task allocation and up to one
+        /// tick of latency; not for hot paths.</para>
+        /// </remarks>
+        /// <typeparam name="T">返回值类型<para>Result type</para></typeparam>
+        /// <param name="work">在泵线程上执行的取值逻辑<para>Query executed on the pump thread</para></param>
+        /// <param name="timeoutMilliseconds">超时毫秒数（泵已停机时避免调用方永久挂起）<para>Timeout in ms (keeps callers from hanging after shutdown)</para></param>
+        /// <returns>取值结果<para>The query result</para></returns>
+        public Task<T> PostAsync<T>(Func<NetServer, T> work, int timeoutMilliseconds = 2000)
+        {
+            if (work == null) throw new ArgumentNullException(nameof(work));
+            if (!IsRunning)
+            {
+                throw new InvalidOperationException(
+                    "PostAsync requires a running server; the pump must be alive to execute posted work.");
+            }
+
+            var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+            NetServer self = this;
+
+            _pumpWork.Post(() =>
+            {
+                try
+                {
+                    completion.TrySetResult(work(self));
+                }
+                catch (Exception e)
+                {
+                    completion.TrySetException(e);
+                }
+            });
+
+            return completion.Task.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, timeoutMilliseconds)));
         }
 
         /// <summary>

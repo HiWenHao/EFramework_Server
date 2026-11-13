@@ -13,6 +13,7 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using EFramework.Tests.Harness;
+using EasyFramework.Http;
 using EasyFramework.Server;
 using EasyFramework.Server.Handshake;
 using EasyFramework.Server.Serialization;
@@ -264,6 +265,38 @@ namespace EFramework.Tests.Tests
                         logger: logger,
                         kcpSettings: new KcpSettings { Mtu = 1 });
                 }, "Mtu=1 must be rejected in the constructor");
+            });
+
+            runner.Run("Management bridge reads stats and broadcasts through the pump", () =>
+            {
+                using var fixture = new ServerFixture();
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                // 先建立一条会话
+                client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes(1L));
+                client.WaitFor(NetOpcode.Pong);
+
+                var logger = new ConsoleServerLogger { Level = LogLevel.None };
+                var bridge = new GameServerBridge(fixture.Server, logger);
+
+                ServerStats stats = bridge.GetStatsAsync().GetAwaiter().GetResult();
+                Assert.Equal(NetServer.Version, stats.Version, "stats version must match the framework version");
+                Assert.Equal(1, stats.Sessions, "one live session");
+
+                IReadOnlyList<SessionInfo> sessions = bridge.GetSessionsAsync().GetAwaiter().GetResult();
+                Assert.Equal(1, sessions.Count, "session listing count");
+                Assert.True(sessions[0].RemoteEndPoint.EndsWith(":" + client.LocalPort, StringComparison.Ordinal),
+                    $"session endpoint must match the probe (got {sessions[0].RemoteEndPoint}, port {client.LocalPort})");
+
+                // 广播从非泵线程发起，必须经 Post 回到泵线程才能真的发出去
+                const int noticeOpcode = 1003;
+                byte[] notice = Encoding.UTF8.GetBytes("admin-notice");
+                Assert.True(bridge.Broadcast(noticeOpcode, notice), "broadcast must be accepted");
+
+                NetPacket received = client.WaitFor(noticeOpcode, 3000);
+                Assert.Equal(notice.Length, received.PayloadLength, "broadcast payload length");
+                Assert.Equal("admin-notice", Encoding.UTF8.GetString(received.Payload, 0, received.PayloadLength),
+                    "broadcast payload");
             });
 
             runner.Run("StopAsync closes live sessions with a reason", () =>

@@ -30,16 +30,21 @@ Probe PASSED
 ## 快速开始
 
 ```bash
-# 1. 启动服务端（默认 0.0.0.0:7777）
+# 1. 启动服务端（默认 UDP 0.0.0.0:7777 + HTTP 0.0.0.0:8080）
 dotnet run --project src/EFramework.App
 
 # 2. 换端口 / 打开 Debug 日志
-dotnet run --project src/EFramework.App -- --port 7801 --verbose
+dotnet run --project src/EFramework.App -- --port 7801 --http-port 8081 --verbose
 
 # 3. 手工探针（另一个终端）：Ping/Pong + 业务回声
 dotnet run --project tests/EFramework.Tests -- probe 127.0.0.1 7777
 
-# 4. 跑全部验证用例
+# 4. 管理面（HTTP）
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/sessions
+curl -X POST "http://127.0.0.1:8080/admin/broadcast?opcode=1003" --data-binary "hello"
+
+# 5. 跑全部验证用例
 dotnet run --project tests/EFramework.Tests
 ```
 
@@ -59,12 +64,17 @@ EFramework_Server/
 │  │  ├─ Transport/                   # IServerTransport + UdpServerTransport
 │  │  ├─ Handshake/                   # IHandshakeValidator + 默认放行实现
 │  │  └─ Logging/, Serialization/      # 控制台日志 + System.Text.Json 序列化器
-│  └─ EFramework.App/                 # 可执行入口 + Echo 示例业务
+│  ├─ EFramework.Http/                # HTTP 宿主（net8.0 + Kestrel，仅管理面）
+│  │  ├─ GameServerBridge.cs          # HTTP ↔ 游戏服唯一桥（Post / PostAsync）
+│  │  ├─ GameNetHostedService.cs      # 把 UDP 游戏服挂到通用主机生命周期
+│  │  ├─ HttpEndpoints.cs             # /health /stats /sessions /admin/*
+│  │  └─ HttpServerOptions.cs         # 绑定地址与端口
+│  └─ EFramework.App/                 # 可执行入口 + Echo 示例业务（两个宿主的组合根）
 ├─ tests/EFramework.Tests/            # 零依赖验证工程（同时是协议探针）
 └─ tools/sync-protocol.py             # 从 Unity 包重新同步协议文件的脚本
 ```
 
-依赖方向单向：`App → Server → Net`，`Net` 不引用任何服务端类型。
+依赖方向单向：`App → Http → Server → Net`，`Net` 不引用任何服务端类型，`Server` 不引用 ASP.NET。
 
 ## 与 EF.Net 的协议对齐
 
@@ -217,6 +227,59 @@ public override void Handle(LoginReq req, MessageContext context)
 server.Post(s => s.Broadcast(ServerNoticeOpcode, payload));
 ```
 
+## HTTP 与游戏服的关系
+
+同一个进程里跑两个宿主，**不共享线程**，只通过 `Post` / `PostAsync` 单向协作：
+
+| | 游戏服（`EFramework.Server`） | HTTP 管理面（`EFramework.Http`） |
+|---|---|---|
+| 协议 | UDP + KCP（12 字节帧） | HTTP/1.1（Kestrel） |
+| 线程 | 定频单线程泵（默认 10ms） | 线程池异步 |
+| 状态归属 | **权威**：会话、KCP、业务 | 只读快照 + 下发命令 |
+| 典型用途 | 实时玩法、位置同步、房间 | 健康检查、后台运维、配置/登录等短请求 |
+
+数据流向只有两条，且都经过 `Post`：
+
+```
+HTTP 线程 ──Post(命令)──▶ 泵线程（广播 / 踢人 / 关服）
+HTTP 线程 ──PostAsync(查询)─▶ 泵线程（统计 / 会话列表）── 返回快照
+```
+
+### 端点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/` | 服务名、版本与端点索引 |
+| GET | `/health` | `{status, version}`，给探针/负载均衡用 |
+| GET | `/stats` | 版本、运行时长、会话数、已处理/失败数、tick |
+| GET | `/sessions` | 会话列表（Id、端点、conv、状态、收发计数、WaitSnd） |
+| POST | `/admin/broadcast?opcode=<n>` | 请求体即原始载荷（`curl --data-binary`），广播给全部会话 |
+| POST | `/admin/close/{id}?reason=<text>` | 关闭指定会话 |
+
+```bash
+curl -X POST "http://127.0.0.1:8080/admin/broadcast?opcode=1003" --data-binary "server maintenance in 5 min"
+curl -X POST "http://127.0.0.1:8080/admin/close/7?reason=kicked"
+```
+
+### 为什么不做成"统一传输层"
+
+`IServerTransport` 是**报文语义**（一条数据报一次出队、非阻塞、无连接），HTTP 是**流语义**（连接复用、
+请求边界、背压、超时）。把它们抽象成一个接口，得到的只会是"两边都不好用"的最小公倍数——
+比如为了迁就 UDP 而放弃流式响应，或为了迁就 HTTP 而在泵里引入异步边界。
+
+正确的复用层次是**领域层**（会话、广播、统计），而不是传输层。
+
+### 什么时候该拆成两个进程
+
+同进程的收益是零成本的服务调用与单次部署；代价是一起扩缩容、一起崩溃。出现下列任一情况就拆：
+
+- HTTP 侧要公网暴露，而游戏服只走内网（安全域不同）；
+- 两侧扩缩容节奏不同（HTTP 扛静态资源/登录洪峰，游戏服按房间数扩）；
+- HTTP 侧的依赖（数据库驱动、第三方 SDK）不想让游戏服承担。
+
+拆的时候只需把 `EFramework.Http` 单独起一个进程，把 `Post` 换成 RPC/消息队列 —— 因为桥接层只有
+`GameServerBridge` 一个文件，改这一处即可。
+
 ## 延迟与调优
 
 单程延迟 ≈ 客户端 KCP 聚合间隔(10ms) + 服务端泵周期(`TickIntervalMs`) + 网络 RTT/2。
@@ -263,6 +326,10 @@ server.Post(s => s.Broadcast(ServerNoticeOpcode, payload));
 7. **多网卡要注意出口 IP**：客户端 `UdpSocket` 用 `Connect()` 绑定了目标地址，只接受**同一 ip:port** 回来的包。
    若服务端从别的网卡出口（源 IP 与客户端所连地址不一致），包会被客户端内核直接丢弃。
    多网卡机器请用 `BindAddress` 指定对外 IP，或用防火墙/host 绑定保证对称。
+8. **HTTP 管理面没有任何鉴权**：`/admin/*` 能广播与踢人。只可内网/本机使用；公网暴露前必须加
+   认证（如 `MapGroup("/admin").RequireAuthorization()` + JWT/Basic）与限流。
+9. **业务消息不要走 HTTP**：那会丢掉 KCP 的可靠性与顺序性，还得重新实现一遍。HTTP 只服务运维与
+   "一次请求一次响应"的短交互（登录、配置、公告拉取）。
 
 ## 协议文件同步
 

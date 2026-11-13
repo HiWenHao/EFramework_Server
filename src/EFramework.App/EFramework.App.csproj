@@ -1,16 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- 可执行入口 + 示例业务：验证「启动即可被 EF.Net 客户端直连」 -->
+  <!--
+    组合根 + 示例业务：一个进程里跑两个宿主。
+    · UDP+KCP 游戏服（EasyFramework.Server）：定频单线程泵，走网络帧。
+    · HTTP 管理面（EasyFramework.Http / Kestrel）：线程池异步，走 JSON。
+    两者不共享线程，只通过 NetServer.Post / PostAsync 与只读快照交互。
+  -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>EFramework.App</AssemblyName>
     <RootNamespace>EFramework.App</RootNamespace>
-    <Description>EF.Net 服务端示例进程：启动后监听 UDP 端口，供 Unity 客户端直连</Description>
+    <Description>EF 服务端示例进程：UDP 游戏服 + HTTP 管理面同进程运行</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\EFramework.Server\EFramework.Server.csproj" />
+    <ProjectReference Include="..\EFramework.Http\EFramework.Http.csproj" />
+    <!-- 组合根直接用 WebApplication 装配 HTTP 宿主，故显式引用 ASP.NET Core 共享框架 -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>

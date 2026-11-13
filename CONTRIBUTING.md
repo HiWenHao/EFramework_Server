@@ -29,11 +29,11 @@ git config commit.template .gitmessage
 |---|---|---|---|
 | `feat` | 新增能力，对外行为变化 | `net` | 协议契约层（KCP / 帧格式 / Opcode） |
 | `fix` | 修复缺陷 | `server` | 服务端运行时（会话、分发、宿主） |
-| `refactor` | 重构，行为不变 | `app` | 可执行入口与示例业务 |
-| `perf` | 性能优化 | `tests` | 验证工程 |
-| `test` | 测试相关 | `tools` | 脚手架与同步脚本 |
-| `docs` | 文档 | `build` | props / sln / CI |
-| `build` / `chore` / `revert` | 工程配置 / 杂务 / 回滚 | | |
+| `refactor` | 重构，行为不变 | `http` | HTTP 管理面（桥接、端点、宿主托管） |
+| `perf` | 性能优化 | `app` | 可执行入口与示例业务 |
+| `test` | 测试相关 | `tests` | 验证工程 |
+| `docs` | 文档 | `tools` | 脚手架与同步脚本 |
+| `build` / `chore` / `revert` | 工程配置 / 杂务 / 回滚 | `build` | props / sln / CI |
 
 ```
 feat(server): 支持服务端主动向单会话推送

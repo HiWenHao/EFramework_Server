@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    HTTP 宿主：只做「HTTP 语义 → 游戏服管理面」的适配，不含业务。
+    与 EFramework.Server（UDP 泵）同进程但不同线程模型：Kestrel 走线程池异步，游戏泵走定频单线程，
+    两者只通过 NetServer.Post / PostAsync 与只读快照交互。
+  -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>EFramework.Http</AssemblyName>
+    <RootNamespace>EasyFramework.Http</RootNamespace>
+    <Description>EF 服务端 HTTP 宿主：Kestrel + 管理面端点，与 UDP 游戏服同进程协作</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EFramework.Server\EFramework.Server.csproj" />
+  </ItemGroup>
+
+</Project>

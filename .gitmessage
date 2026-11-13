@@ -19,6 +19,7 @@
 # scope（建议填，对应目录或子系统）
 #   net       协议契约层（KCP / 帧格式 / Opcode）
 #   server    服务端运行时（会话、分发、宿主）
+#   http      HTTP 管理面（桥接、端点、宿主托管）
 #   app       可执行入口与示例业务
 #   tests     验证工程
 #   tools     脚手架与同步脚本
