@@ -16,6 +16,7 @@ using EFramework.Tests.Harness;
 using EasyFramework.Server;
 using EasyFramework.Server.Handshake;
 using EasyFramework.Server.Serialization;
+using EasyFramework.Server.Sessions;
 using EasyFramework.Systems.Net;
 
 namespace EFramework.Tests.Tests
@@ -31,6 +32,8 @@ namespace EFramework.Tests.Tests
 
         private const int EchoReqOpcode = 2001;
         private const int EchoResOpcode = 2002;
+        private const int OffThreadReqOpcode = 2003;
+        private const int OffThreadResOpcode = 2004;
         private const int ThrowingOpcode = 2009;
         private const int UnknownOpcode = 9999;
 
@@ -155,6 +158,81 @@ namespace EFramework.Tests.Tests
                 Assert.True(fixture.Dispatcher.FailedCount == 1, "throwing handler must be counted");
             });
 
+            runner.Run("Reply from a pool thread is marshalled back to the pump", () =>
+            {
+                using var fixture = new ServerFixture();
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                client.Send(OffThreadReqOpcode, 77, Json.Serialize(new OffThreadReq { Content = "work" }));
+
+                NetPacket response = client.WaitFor(
+                    packet => packet.Opcode == OffThreadResOpcode && packet.RpcId == 77,
+                    "off-thread response on rpcId 77", 5000);
+
+                var body = Json.Deserialize<OffThreadRes>(response.Payload, 0, response.PayloadLength);
+                Assert.NotNull(body, "response body");
+                Assert.Equal("work@pool", body.Content, "content produced on the pool thread");
+                Assert.True(body.HandlerThreadId != body.ReplyThreadId,
+                    "handler and reply must run on different threads for this case to prove marshalling");
+            });
+
+            runner.Run("A burst of 200 pings is answered without loss or duplication", () =>
+            {
+                using var fixture = new ServerFixture();
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                const int count = 200;
+                for (int i = 0; i < count; i++)
+                {
+                    client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes((long)i));
+                }
+
+                var seen = new HashSet<long>();
+                var stopwatch = Stopwatch.StartNew();
+
+                while (seen.Count < count && stopwatch.ElapsedMilliseconds < 8000)
+                {
+                    client.Drain(packet =>
+                    {
+                        if (packet.Opcode == NetOpcode.Pong && packet.PayloadLength >= 8)
+                            seen.Add(BitConverter.ToInt64(packet.Payload, 0));
+                    });
+
+                    Thread.Sleep(1);
+                }
+
+                Assert.Equal(count, seen.Count, "every ping must be answered exactly once");
+
+                for (int i = 0; i < count; i++)
+                {
+                    Assert.True(seen.Contains(i), $"missing pong for ping {i}");
+                }
+            });
+
+            runner.Run("NetServer.Send from a foreign thread fails fast", () =>
+            {
+                using var fixture = new ServerFixture();
+
+                Exception captured = null;
+                var worker = new Thread(() =>
+                {
+                    try
+                    {
+                        fixture.Server.Send(1, NetOpcode.Ping);
+                    }
+                    catch (Exception e)
+                    {
+                        captured = e;
+                    }
+                });
+
+                worker.Start();
+                worker.Join(2000);
+
+                Assert.True(captured is InvalidOperationException,
+                    $"expected InvalidOperationException, got {captured?.GetType().Name ?? "no exception"}");
+            });
+
             runner.Run("StopAsync closes live sessions with a reason", () =>
             {
                 var reasons = new List<string>();
@@ -218,6 +296,7 @@ namespace EFramework.Tests.Tests
                 var logger = new ConsoleServerLogger { Level = LogLevel.None };
                 Dispatcher = new ServerDispatcher(logger, Json);
                 Dispatcher.Register<TestEchoReq, TestEchoHandler>();
+                Dispatcher.Register<OffThreadReq, OffThreadHandler>();
 
                 Server = new NetServer(options, Dispatcher, logger: logger, handshakeValidator: validator);
                 Server.Start();
@@ -280,6 +359,39 @@ namespace EFramework.Tests.Tests
             #endregion
         }
 
+        /// <summary>
+        /// 测试用跨线程处理器：模拟「处理器把耗时逻辑丢到线程池，再从池线程回包」。
+        /// <para>Test cross-thread handler: simulates offloading slow work to the pool and replying from there.</para>
+        /// </summary>
+        private sealed class OffThreadHandler : MessageHandler<OffThreadReq>
+        {
+            #region Methods
+
+            public override void Handle(OffThreadReq message, MessageContext context)
+            {
+                // 只把「会话 + 配对号 + 业务数据」带到别的线程，上下文本身不跨线程使用
+                NetSession session = context.Session;
+                int rpcId = context.RpcId;
+                string content = message.Content;
+                int handlerThreadId = Environment.CurrentManagedThreadId;
+
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    Thread.Sleep(5); // 模拟查库 / 调第三方
+
+                    session.Send(OffThreadResOpcode, rpcId, Json.Serialize(new OffThreadRes
+                    {
+                        Content = content + "@pool",
+                        SessionId = session.SessionId,
+                        HandlerThreadId = handlerThreadId,
+                        ReplyThreadId = Environment.CurrentManagedThreadId,
+                    }));
+                });
+            }
+
+            #endregion
+        }
+
         #endregion
     }
 
@@ -309,6 +421,40 @@ namespace EFramework.Tests.Tests
         public string Content { get; set; }
 
         public int SessionId { get; set; }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// 测试用跨线程请求消息。
+    /// <para>Test cross-thread request message.</para>
+    /// </summary>
+    [NetOpcode(2003)]
+    internal sealed class OffThreadReq
+    {
+        #region Properties
+
+        public string Content { get; set; }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// 测试用跨线程响应消息（带两个线程 Id，用于证明回包确实发生在别的线程上）。
+    /// <para>Test cross-thread response (carries both thread ids to prove the reply happens off-pump).</para>
+    /// </summary>
+    [NetOpcode(2004)]
+    internal sealed class OffThreadRes
+    {
+        #region Properties
+
+        public string Content { get; set; }
+
+        public int SessionId { get; set; }
+
+        public int HandlerThreadId { get; set; }
+
+        public int ReplyThreadId { get; set; }
 
         #endregion
     }

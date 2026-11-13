@@ -50,6 +50,7 @@ namespace EasyFramework.Server
         private readonly IServerLogger _logger;
         private readonly IHandshakeValidator _handshakeValidator;
         private readonly SessionRouter _router;
+        private readonly PumpWorkQueue _pumpWork;
         private readonly ServerLoop _loop;
         private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
 
@@ -131,7 +132,8 @@ namespace EasyFramework.Server
 
             _router = new SessionRouter(_options, kcpSettings ?? KcpSettings.Default, _transport, _dispatcher, _logger,
                 RaiseSessionOpened, RaiseSessionClosed);
-            _loop = new ServerLoop(_options, _transport, _router, _logger);
+            _pumpWork = new PumpWorkQueue(_logger);
+            _loop = new ServerLoop(_options, _transport, _router, _pumpWork, _logger);
 
             // 协议层处理器与业务处理器分开装配，业务可用同 Opcode 覆盖
             new BuiltInMessageHandlers(_handshakeValidator, _logger).Register(_dispatcher);
@@ -204,8 +206,29 @@ namespace EasyFramework.Server
         }
 
         /// <summary>
-        /// 向指定会话发送单向消息。
-        /// <para>Send a one-way message to a session.</para>
+        /// 把一段工作投递到消息泵线程执行（任意线程可调用）。
+        /// <para>Post work to be executed on the message-pump thread (safe from any thread).</para>
+        /// </summary>
+        /// <remarks>
+        /// 会话路由与会话字典是泵线程独占的，<see cref="Send(int,int,byte[])"/>、<see cref="Broadcast"/>、
+        /// <see cref="CloseSession"/> 都只能在泵线程调用。定时器、线程池或其它线程要操作服务端时，
+        /// 一律经此投递，具体执行发生在下一个节拍开头。
+        /// <para>The router and its dictionaries are pump-owned, so Send/Broadcast/CloseSession must run on the
+        /// pump thread. Timers, thread-pool callbacks or other threads must go through this method; work runs
+        /// at the start of the next tick.</para>
+        /// </remarks>
+        /// <param name="work">待执行动作，参数为当前服务端实例<para>Work to run; receives the server instance</para></param>
+        public void Post(Action<NetServer> work)
+        {
+            if (work == null) return;
+
+            NetServer self = this;
+            _pumpWork.Post(() => work(self));
+        }
+
+        /// <summary>
+        /// 向指定会话发送单向消息（仅限泵线程；跨线程请用 <see cref="Post"/>）。
+        /// <para>Send a one-way message to a session (pump thread only; use Post from other threads).</para>
         /// </summary>
         /// <param name="sessionId">会话 Id<para>Session id</para></param>
         /// <param name="opcode">消息操作码<para>Message opcode</para></param>
@@ -213,14 +236,17 @@ namespace EasyFramework.Server
         /// <returns>会话是否存在（不保证已送达）<para>Whether the session exists (delivery is not guaranteed)</para></returns>
         public bool Send(int sessionId, int opcode, byte[] payload = null)
         {
+            EnsurePumpThread(nameof(Send));
+
             if (!_router.TryGet(sessionId, out NetSession session)) return false;
             session.Send(opcode, payload);
             return true;
         }
 
         /// <summary>
-        /// 向指定会话发送带配对号的消息（客户端按 rpcId 配对到挂起调用时会用到）。
-        /// <para>Send a message with a pairing id to a session (the client pairs it to a pending call by rpcId).</para>
+        /// 向指定会话发送带配对号的消息（客户端按 rpcId 配对到挂起调用时会用到；仅限泵线程）。
+        /// <para>Send a message with a pairing id to a session (only the client pairs it by rpcId; pump thread
+        /// only).</para>
         /// </summary>
         /// <param name="sessionId">会话 Id<para>Session id</para></param>
         /// <param name="opcode">消息操作码<para>Message opcode</para></param>
@@ -229,20 +255,24 @@ namespace EasyFramework.Server
         /// <returns>会话是否存在<para>Whether the session exists</para></returns>
         public bool Send(int sessionId, int opcode, int rpcId, byte[] payload)
         {
+            EnsurePumpThread(nameof(Send));
+
             if (!_router.TryGet(sessionId, out NetSession session)) return false;
             session.Send(opcode, rpcId, payload);
             return true;
         }
 
         /// <summary>
-        /// 向全部会话广播单向消息。
-        /// <para>Broadcast a one-way message to every session.</para>
+        /// 向全部会话广播单向消息（仅限泵线程；跨线程请用 <see cref="Post"/>）。
+        /// <para>Broadcast a one-way message to every session (pump thread only; use Post from other threads).</para>
         /// </summary>
         /// <param name="opcode">消息操作码<para>Message opcode</para></param>
         /// <param name="payload">载荷字节，可为 null<para>Payload bytes; may be null</para></param>
         /// <returns>实际投递的会话数<para>Number of sessions the message was queued for</para></returns>
         public int Broadcast(int opcode, byte[] payload = null)
         {
+            EnsurePumpThread(nameof(Broadcast));
+
             NetSession[] sessions = _router.Snapshot();
             for (int i = 0; i < sessions.Length; i++)
             {
@@ -253,14 +283,16 @@ namespace EasyFramework.Server
         }
 
         /// <summary>
-        /// 关闭指定会话（终态，由对端重连重建）。
-        /// <para>Close a session (terminal; the peer rebuilds it on reconnect).</para>
+        /// 关闭指定会话（终态，由对端重连重建；仅限泵线程）。
+        /// <para>Close a session (terminal; the peer rebuilds it on reconnect; pump thread only).</para>
         /// </summary>
         /// <param name="sessionId">会话 Id<para>Session id</para></param>
         /// <param name="reason">关闭原因<para>Close reason</para></param>
         /// <returns>是否找到并关闭<para>Whether the session was found and closed</para></returns>
         public bool CloseSession(int sessionId, string reason = "Closed by server")
         {
+            EnsurePumpThread(nameof(CloseSession));
+
             if (!_router.TryGet(sessionId, out NetSession session)) return false;
             _router.Remove(session, reason);
             return true;
@@ -274,6 +306,15 @@ namespace EasyFramework.Server
         {
             if (_disposed) return;
             _disposed = true;
+
+            // 在泵线程里 Dispose 等于自己等自己：直接死锁。此时只发停机信号，把释放交给进程退出。
+            if (_loop.IsPumpThread)
+            {
+                _logger?.Error("[SERVER] Dispose() called on the pump thread; signalling shutdown only. " +
+                               "Dispose from another thread (e.g. the host's shutdown path).");
+                _cancellation.Cancel();
+                return;
+            }
 
             try
             {
@@ -311,6 +352,16 @@ namespace EasyFramework.Server
             {
                 _logger?.Error("[SERVER] pump terminated unexpectedly.", e);
             }
+        }
+
+        // 会话路由与会话字典是泵线程独占的：跨线程直接调用会撕坏字典，宁可显式失败也不静默出错
+        private void EnsurePumpThread(string operation)
+        {
+            if (_loop.IsPumpThread) return;
+
+            throw new InvalidOperationException(
+                $"{operation} must be called on the message-pump thread. " +
+                "To act from another thread use NetServer.Post(...); NetSession.Send is safe from any thread.");
         }
 
         // 订阅者异常不能影响收发主循环

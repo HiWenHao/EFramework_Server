@@ -94,7 +94,8 @@ Kcp.cs  MessagePipe.cs  NetOpcode.cs  NetProtocolException.cs
 - 类型声明与非私有成员写**中英双语 XML 注释**（中文一行 + `<para>` 英文一行）；
   私有成员用 `//` 单行中文；重写接口/基类成员时若签名已自解释可省略。
 - 不引入魔法数：可读常量或配置项。
-- 处理器（`MessageHandler<T>`）里不做阻塞操作，见 README「已知约束」。
+- 处理器（`MessageHandler<T>`）里不做阻塞操作；跨线程回包用 `NetSession.Send`，外部线程操作服务端用 `NetServer.Post`，
+  详见 README「线程模型」。
 
 ## 6. 新增一条业务消息
 

@@ -178,6 +178,26 @@ namespace EFramework.Tests.Harness
         }
 
         /// <summary>
+        /// 取出当前已收到的全部消息（内部先 Pump 一次），返回取出条数。
+        /// <para>Take every message received so far (pumping once first); returns how many were taken.</para>
+        /// </summary>
+        /// <param name="onPacket">逐条回调<para>Per-packet callback</para></param>
+        /// <returns>取出条数<para>Number of packets taken</para></returns>
+        public int Drain(Action<NetPacket> onPacket)
+        {
+            Pump();
+
+            int taken = 0;
+            while (_inbox.Count > 0)
+            {
+                onPacket?.Invoke(_inbox.Dequeue());
+                taken++;
+            }
+
+            return taken;
+        }
+
+        /// <summary>
         /// 关闭套接字。
         /// <para>Close the socket.</para>
         /// </summary>

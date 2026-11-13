@@ -37,6 +37,17 @@ namespace EasyFramework.Server
         #region Methods
 
         /// <summary>
+        /// 判断某级别是否会被输出（与 <see cref="Write"/> 的过滤条件保持一致）
+        /// <para>Whether the level would be emitted (kept in sync with the filter in <see cref="Write"/>)</para>
+        /// </summary>
+        /// <param name="level">待输出的级别<para>Level to emit</para></param>
+        /// <returns>是否会被输出<para>Whether it would be emitted</para></returns>
+        public bool IsEnabled(LogLevel level)
+        {
+            return Level != LogLevel.None && level >= Level;
+        }
+
+        /// <summary>
         /// 输出诊断细节
         /// <para>Write diagnostic detail</para>
         /// </summary>
@@ -80,7 +91,7 @@ namespace EasyFramework.Server
         // 统一出口：级别过滤 + 时间戳 + 串行写入
         private void Write(LogLevel level, string tag, string message, Exception exception)
         {
-            if (level < Level || Level == LogLevel.None) return;
+            if (!IsEnabled(level)) return;
 
             string line = $"{DateTime.Now:HH:mm:ss.fff} [{tag}] {message}";
             lock (_writeGate)

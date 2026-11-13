@@ -8,6 +8,7 @@
  */
 
 using System;
+using System.Collections.Concurrent;
 using System.Reflection;
 
 namespace EasyFramework.Systems.Net
@@ -54,6 +55,14 @@ namespace EasyFramework.Systems.Net
     /// </summary>
     public static class NetOpcodeInfo
     {
+        #region Fields
+
+        // 类型 → Opcode 缓存。Reply<T>/Push<T> 每条消息都会取码，反射结果必须缓存，
+        // 否则每条出站消息都要走一次 GetCustomAttribute（内部会分配 object[]）。
+        private static readonly ConcurrentDictionary<Type, int> OpcodeCache = new ConcurrentDictionary<Type, int>();
+
+        #endregion
+
         #region Methods
 
         /// <summary>
@@ -65,8 +74,14 @@ namespace EasyFramework.Systems.Net
         public static int GetOpcode(Type messageType)
         {
             if (messageType == null) return 0;
-            var attribute = messageType.GetCustomAttribute<NetOpcodeAttribute>(false);
-            return attribute?.Opcode ?? 0;
+            if (OpcodeCache.TryGetValue(messageType, out int cached)) return cached;
+
+            NetOpcodeAttribute attribute = messageType.GetCustomAttribute<NetOpcodeAttribute>(false);
+            int opcode = attribute?.Opcode ?? 0;
+
+            // 特性不可变，未标注的 0 也一并缓存，避免反复反射
+            OpcodeCache[messageType] = opcode;
+            return opcode;
         }
 
         /// <summary>

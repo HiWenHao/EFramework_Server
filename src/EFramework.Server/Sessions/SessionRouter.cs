@@ -161,37 +161,18 @@ namespace EasyFramework.Server.Sessions
         }
 
         /// <summary>
-        /// 推进所有会话一个节拍。
-        /// <para>Advance every session by one tick.</para>
+        /// 一个节拍内推进全部会话并顺手回收：关闭的、空闲超时的、以及 Tick 中自关的。
+        /// <para>Advance every session and reclaim in the same pass: closed ones, idle-timed-out ones,
+        /// and those that closed themselves during Tick.</para>
         /// </summary>
+        /// <remarks>
+        /// 合并成一次遍历是为了只填一次复用缓冲（每节拍两次全量拷贝没有必要）。
+        /// 遍历的是复用缓冲而非字典本身，因此 <see cref="Remove"/> 在循环内改字典是安全的。
+        /// <para>Merged into one pass to fill the reused buffer once (two full copies per tick are
+        /// pointless). The loop walks the reused buffer, not the dictionary, so Remove is safe inside.</para>
+        /// </remarks>
         /// <param name="now">当前单调时刻（秒）<para>Current monotonic timestamp in seconds</para></param>
-        public void Tick(double now)
-        {
-            if (_byEndPoint.Count == 0) return;
-
-            FillIterationBuffer();
-            for (int i = 0; i < _iterationBuffer.Count; i++)
-            {
-                NetSession session = _iterationBuffer[i];
-                try
-                {
-                    session.Tick(now);
-                }
-                catch (Exception e)
-                {
-                    // 单个会话的异常不能拖垮整个服务端：关掉它，等扫除回收
-                    _logger?.Error($"[SESSION {session.SessionId}] tick failed, closing session.", e);
-                    Remove(session, "Session tick failed");
-                }
-            }
-        }
-
-        /// <summary>
-        /// 回收已关闭与空闲超时的会话。
-        /// <para>Reclaim closed and idle-timed-out sessions.</para>
-        /// </summary>
-        /// <param name="now">当前单调时刻（秒）<para>Current monotonic timestamp in seconds</para></param>
-        public void Sweep(double now)
+        public void Update(double now)
         {
             if (_byEndPoint.Count == 0) return;
 
@@ -202,6 +183,26 @@ namespace EasyFramework.Server.Sessions
             {
                 NetSession session = _iterationBuffer[i];
 
+                // 上一轮已被关闭（例如处理器里主动 Close），直接回收
+                if (session.IsClosed)
+                {
+                    Remove(session, session.CloseReason);
+                    continue;
+                }
+
+                try
+                {
+                    session.Tick(now);
+                }
+                catch (Exception e)
+                {
+                    // 单个会话的异常不能拖垮整个服务端：关掉它，立即回收
+                    _logger?.Error($"[SESSION {session.SessionId}] tick failed, closing session.", e);
+                    Remove(session, "Session tick failed");
+                    continue;
+                }
+
+                // Tick 内部可能触发了延迟关闭
                 if (session.IsClosed)
                 {
                     Remove(session, session.CloseReason);
@@ -274,7 +275,11 @@ namespace EasyFramework.Server.Sessions
         {
             if (session.State == NetSessionState.Handshaking && packet.Opcode != NetOpcode.Handshake)
             {
-                _logger?.Warn($"[SESSION {session.SessionId}] opcode {packet.Opcode} dropped: handshake pending");
+                if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                {
+                    _logger.Warn($"[SESSION {session.SessionId}] opcode {packet.Opcode} dropped: handshake pending");
+                }
+
                 return;
             }
 

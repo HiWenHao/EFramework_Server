@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -171,9 +172,25 @@ namespace EasyFramework.Server.Transport
             catch (SocketException e)
             {
                 // 对端已关闭 / 路由不可达属常态噪音，降级为 Debug 避免刷屏
-                _logger?.Debug($"[UDP] send to {remoteEndPoint} failed ({e.SocketErrorCode}): {e.Message}");
+                if (_logger?.IsEnabled(LogLevel.Debug) == true)
+                {
+                    _logger.Debug($"[UDP] send to {remoteEndPoint} failed ({e.SocketErrorCode}): {e.Message}");
+                }
+
                 return -1;
             }
+        }
+
+        /// <summary>
+        /// 归还数据报缓冲到池（重复归还或非池化缓冲都是安全的空操作）。
+        /// <para>Return the datagram buffer to the pool (double or non-pooled releases are safely ignored).</para>
+        /// </summary>
+        /// <param name="datagram">待归还的数据报<para>Datagram to release</para></param>
+        public void Release(Datagram datagram)
+        {
+            if (!datagram.IsPooled || datagram.Buffer == null) return;
+
+            ArrayPool<byte>.Shared.Return(datagram.Buffer);
         }
 
         /// <summary>
@@ -208,9 +225,10 @@ namespace EasyFramework.Server.Transport
             cancellation?.Dispose();
             _inbound.Writer.TryComplete();
 
-            // 丢弃停机后残留的数据报，避免残留引用拖住内存
-            while (_inbound.Reader.TryRead(out _))
+            // 丢弃停机后残留的数据报，并把池化缓冲还池，否则这些数组永远回不到池里
+            while (_inbound.Reader.TryRead(out Datagram leftover))
             {
+                Release(leftover);
             }
         }
 
@@ -252,7 +270,11 @@ namespace EasyFramework.Server.Transport
                 catch (SocketException e)
                 {
                     // Windows 上对端端口不可达会把 ICMP 报错转成 10054 抛给接收端，属正常噪音，不能退出循环
-                    _logger?.Debug($"[UDP] receive error ({e.SocketErrorCode}): {e.Message}");
+                    if (_logger?.IsEnabled(LogLevel.Debug) == true)
+                    {
+                        _logger.Debug($"[UDP] receive error ({e.SocketErrorCode}): {e.Message}");
+                    }
+
                     continue;
                 }
                 catch (Exception e)
@@ -263,14 +285,22 @@ namespace EasyFramework.Server.Transport
 
                 if (result.ReceivedBytes <= 0) continue;
 
-                byte[] payload = new byte[result.ReceivedBytes];
+                // 从池里按实际长度取一块（桶大小可能略大），只复制这一条数据报；
+                // 消费方处理完后由 Release 归还，稳态下入站路径零 GC
+                byte[] payload = ArrayPool<byte>.Shared.Rent(result.ReceivedBytes);
                 Buffer.BlockCopy(buffer, 0, payload, 0, result.ReceivedBytes);
 
-                if (_inbound.Writer.TryWrite(new Datagram(payload, result.ReceivedBytes, (IPEndPoint)result.RemoteEndPoint)))
+                if (_inbound.Writer.TryWrite(new Datagram(payload, result.ReceivedBytes, (IPEndPoint)result.RemoteEndPoint, true)))
                     continue;
 
+                // 队列满：这条包丢弃，缓冲立刻归还，否则池会被慢慢抽干
+                ArrayPool<byte>.Shared.Return(payload);
                 Interlocked.Increment(ref _droppedDatagrams);
-                _logger?.Debug($"[UDP] inbound queue full, dropped {result.ReceivedBytes}B from {result.RemoteEndPoint}");
+
+                if (_logger?.IsEnabled(LogLevel.Debug) == true)
+                {
+                    _logger.Debug($"[UDP] inbound queue full, dropped {result.ReceivedBytes}B from {result.RemoteEndPoint}");
+                }
             }
         }
 

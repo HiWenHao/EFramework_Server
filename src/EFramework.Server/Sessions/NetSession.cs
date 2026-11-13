@@ -7,6 +7,7 @@
  */
 
 using System;
+using System.Collections.Concurrent;
 using System.Net;
 using EasyFramework.Systems.Net;
 
@@ -32,6 +33,21 @@ namespace EasyFramework.Server.Sessions
     /// </remarks>
     public sealed class NetSession
     {
+        // 跨线程投递的一条出站消息（队列元素用结构体，避免每次入队都新建对象）
+        private readonly struct OutboundMessage
+        {
+            public readonly int Opcode;
+            public readonly int RpcId;
+            public readonly byte[] Payload;
+
+            public OutboundMessage(int opcode, int rpcId, byte[] payload)
+            {
+                Opcode = opcode;
+                RpcId = rpcId;
+                Payload = payload;
+            }
+        }
+
         #region Fields
 
         // 单条完整消息的初始读取缓冲倍数（超出时自动扩容，扩容不会丢消息）
@@ -43,6 +59,12 @@ namespace EasyFramework.Server.Sessions
         private readonly string _remoteEndPointText;
         private readonly Action<NetSession, NetPacket> _onPacket;
         private readonly IServerLogger _logger;
+
+        // 创建本会话的线程（即消息泵线程）：只有它能碰 KCP 内部状态
+        private readonly int _pumpThreadId;
+
+        // 跨线程出站队列：非泵线程调用 Send 时先入队，下个节拍由泵线程代发
+        private readonly ConcurrentQueue<OutboundMessage> _outbox = new ConcurrentQueue<OutboundMessage>();
 
         private byte[] _kcpRecvBuffer;
         private double _lastReceiveTime;
@@ -163,6 +185,9 @@ namespace EasyFramework.Server.Sessions
             _logger = logger;
             _lastReceiveTime = now;
 
+            // 会话由路由在消息泵线程上创建，这里记下的就是唯一的「可写 KCP」线程
+            _pumpThreadId = Environment.CurrentManagedThreadId;
+
             settings ??= KcpSettings.Default;
             _kcp = new Kcp(conv, SendDatagram);
             settings.ApplyTo(_kcp);
@@ -189,7 +214,10 @@ namespace EasyFramework.Server.Sessions
             if (result < 0)
             {
                 // conv 不匹配或段长度非法：丢弃该数据报即可，KCP 会靠对端重传恢复
-                _logger?.Debug($"[SESSION {SessionId}] malformed datagram dropped ({length}B, kcp={result})");
+                if (_logger?.IsEnabled(LogLevel.Debug) == true)
+                {
+                    _logger.Debug($"[SESSION {SessionId}] malformed datagram dropped ({length}B, kcp={result})");
+                }
             }
         }
 
@@ -202,6 +230,9 @@ namespace EasyFramework.Server.Sessions
         internal void Tick(double now)
         {
             if (_closed) return;
+
+            // 跨线程投递的消息必须在冲刷之前搬进 KCP，否则要多等一个节拍
+            DrainOutbox();
 
             _kcp.Update();
 
@@ -222,7 +253,11 @@ namespace EasyFramework.Server.Sessions
 
                 if (!MessagePipe.TryDecodePacket(SessionId, _kcpRecvBuffer, out NetPacket packet))
                 {
-                    _logger?.Warn($"[SESSION {SessionId}] frame decode failed, {size}B dropped");
+                    if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                    {
+                        _logger.Warn($"[SESSION {SessionId}] frame decode failed, {size}B dropped");
+                    }
+
                     continue;
                 }
 
@@ -253,6 +288,14 @@ namespace EasyFramework.Server.Sessions
         /// 发送一条消息，rpcId 非 0 时客户端会把它配对给挂起的 RPC 等待方。
         /// <para>Send a message; a non-zero rpcId is paired with a pending client RPC call.</para>
         /// </summary>
+        /// <remarks>
+        /// <b>线程安全</b>：可从任意线程调用。非消息泵线程会先入队，由下一个节拍的泵线程代发，
+        /// 因此跨线程回包的额外延迟上限是一个 <c>TickIntervalMs</c>。
+        /// KCP 内部状态只能在泵线程上访问，直接跨线程写会破坏其链表与序号。
+        /// <para><b>Thread safety</b>: safe from any thread. Off-pump callers are queued and flushed by the
+        /// pump on its next tick, adding at most one <c>TickIntervalMs</c> of latency. KCP state is
+        /// pump-thread-only; writing it cross-thread corrupts its lists and sequence numbers.</para>
+        /// </remarks>
         /// <param name="opcode">消息操作码<para>Message opcode</para></param>
         /// <param name="rpcId">RPC 配对号（回显请求的 rpcId）<para>RPC pairing id (echo the request's rpcId)</para></param>
         /// <param name="payload">载荷字节，可为 null<para>Payload bytes; may be null</para></param>
@@ -260,17 +303,44 @@ namespace EasyFramework.Server.Sessions
         {
             if (_closed) return;
 
+            // 跨线程（例如处理器把耗时逻辑丢到线程池后回包）：只入队，不碰 KCP
+            if (Environment.CurrentManagedThreadId != _pumpThreadId)
+            {
+                _outbox.Enqueue(new OutboundMessage(opcode, rpcId, payload));
+                return;
+            }
+
+            SendCore(opcode, rpcId, payload);
+        }
+
+        // 真正的发送：只允许泵线程调用
+        private void SendCore(int opcode, int rpcId, byte[] payload)
+        {
             byte[] frame = MessagePipe.Encode(opcode, rpcId, payload);
 
             // KCP 在下一个节拍统一冲刷，故本条消息的实际发出延迟 <= ServerOptions.TickIntervalMs
             int result = _kcp.Send(frame, 0, frame.Length);
             if (result < 0)
             {
-                _logger?.Warn($"[SESSION {SessionId}] send failed (opcode={opcode}, {frame.Length}B, kcp={result})");
+                if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                {
+                    _logger.Warn($"[SESSION {SessionId}] send failed (opcode={opcode}, {frame.Length}B, kcp={result})");
+                }
+
                 return;
             }
 
             _sentMessages++;
+        }
+
+        // 把跨线程投递的消息搬进 KCP（必须在冲刷之前）
+        private void DrainOutbox()
+        {
+            while (_outbox.TryDequeue(out OutboundMessage message))
+            {
+                if (_closed) return;
+                SendCore(message.Opcode, message.RpcId, message.Payload);
+            }
         }
 
         /// <summary>

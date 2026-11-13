@@ -30,6 +30,16 @@ namespace EasyFramework.Server
         #region Methods
 
         /// <summary>
+        /// 判断某级别是否会被输出。热路径（每包/每消息）先问一次再拼字符串，
+        /// 否则日志被过滤时字符串插值仍会照常分配。
+        /// <para>Whether the level would be emitted. Hot paths should ask first and only then format,
+        /// otherwise string interpolation still allocates even when the entry is filtered out.</para>
+        /// </summary>
+        /// <param name="level">待输出的级别<para>Level to emit</para></param>
+        /// <returns>是否会被输出<para>Whether it would be emitted</para></returns>
+        bool IsEnabled(LogLevel level);
+
+        /// <summary>
         /// 输出诊断细节
         /// <para>Write diagnostic detail</para>
         /// </summary>

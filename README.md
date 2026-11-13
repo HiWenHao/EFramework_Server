@@ -171,6 +171,39 @@ KCP 调参走 `KcpSettings`，**默认值与客户端 `NetworkSettings` 完全�
 （`Mtu=512`、`WndSize=256/256`、`NoDelay(1,10,2,1)`、`DeadLink=20`）。两侧 MTU/窗口必须一致，
 否则会出现"大消息卡死"或"带宽跑不满"。
 
+## 线程模型
+
+所有 KCP 状态与业务处理器都跑在**唯一一条消息泵线程**上，因此会话与业务状态无需加锁。代价是必须遵守以下三条：
+
+| 调用点 | 允许的线程 | 说明 |
+|---|---|---|
+| `MessageHandler.Handle` / 所有处理器 | 泵线程 | 跑在泵里，**禁止阻塞**（同步 IO、`Thread.Sleep`、`lock` 长等待） |
+| `NetSession.Send` | **任意线程** | 非泵线程会先入队，下一节拍由泵代发，额外延迟 ≤ 一个 `TickIntervalMs` |
+| `NetServer.Send` / `Broadcast` / `CloseSession` | 仅泵线程 | 需要访问会话路由；跨线程调用会抛 `InvalidOperationException` |
+| `NetServer.Post(work)` | 任意线程 | 把动作投递到泵线程执行（定时器、线程池回调、信号处理都用它） |
+
+处理器里做慢活的标准写法（回包走 `NetSession.Send`，自动回泵线程）：
+
+```csharp
+public override void Handle(LoginReq req, MessageContext context)
+{
+    NetSession session = context.Session;   // 只带会话与业务数据出去，上下文本身不跨线程用
+    int rpcId = context.RpcId;
+
+    ThreadPool.QueueUserWorkItem(_ =>
+    {
+        var result = QueryDatabase(req.Account);              // 慢活
+        session.Send(LoginResOpcode, rpcId, Serialize(result)); // 任意线程安全
+    });
+}
+```
+
+从外部（定时器/管理接口）操作服务端：
+
+```csharp
+server.Post(s => s.Broadcast(ServerNoticeOpcode, payload));
+```
+
 ## 延迟与调优
 
 单程延迟 ≈ 客户端 KCP 聚合间隔(10ms) + 服务端泵周期(`TickIntervalMs`) + 网络 RTT/2。
@@ -187,10 +220,10 @@ KCP 调参走 `KcpSettings`，**默认值与客户端 `NetworkSettings` 完全�
 
 | 接口 | 替换场景 |
 |---|---|
-| `IServerTransport` | 换 TCP / WebSocket / KCP over QUIC；会话层与分发层零改动 |
+| `IServerTransport` | 换 TCP / WebSocket / KCP over QUIC；会话层与分发层零改动（实现时需按约定实现 `Release` 归还数据报缓冲） |
 | `IMessageSerializer` | Protobuf / MessagePack / MemoryPack（与客户端同步替换） |
 | `IHandshakeValidator` | Token 验签、有效期、账号绑定、IP 白名单 |
-| `IServerLogger` | Serilog / NLog / 云日志 |
+| `IServerLogger` | Serilog / NLog / 云日志（记得实现 `IsEnabled`，热路径靠它避免无谓字符串分配） |
 
 ## 已知约束（上生产前必做）
 
@@ -198,8 +231,8 @@ KCP 调参走 `KcpSettings`，**默认值与客户端 `NetworkSettings` 完全�
    并置 `RequireHandshake = true`。
 2. **conv 非随机**：客户端 conv 从 1 递增且明文，可被伪造。当前以端点隔离，风险可控；
    若要防会话劫持，建议改成"服务端分配 conv"或客户端随机 conv（需改客户端）。
-3. **单线程泵**：处理器必须快速返回，禁止同步 IO / `Thread.Sleep`。慢逻辑请投递线程池再用
-   `MessageContext.Session` 回包。
+3. **单线程泵**：处理器必须快速返回，禁止同步 IO / `Thread.Sleep`。慢逻辑投递线程池后用
+   `NetSession.Send` 回包（任意线程安全），详见「线程模型」。
 4. **实例不可重启**：`NetServer` 停机后传输通道关闭，重启请新建实例。
 5. **无加密**：UDP 明文。需要防篡改时在帧层加签名或走 DTLS 类方案。
 6. **重连是新端点**：客户端重连会新建 socket（新本地端口），旧会话靠空闲超时回收，属预期行为。

@@ -78,6 +78,20 @@ namespace EasyFramework.Server.Transport
         int Send(byte[] data, int offset, int count, IPEndPoint remoteEndPoint);
 
         /// <summary>
+        /// 归还数据报缓冲：消费完必须调用且只调用一次（池化实现把数组还池，非池化实现为空操作）。
+        /// <para>Release the datagram buffer: call exactly once after consuming it (pooled implementations
+        /// return the array to the pool, others are no-ops).</para>
+        /// </summary>
+        /// <remarks>
+        /// 刻意做成显式方法而非 <see cref="IDisposable"/>：<see cref="Datagram"/> 是结构体，装箱会引入新分配。
+        /// 消息泵在每个数据报处理完后用 finally 保证调用一次。
+        /// <para>Deliberately an explicit method rather than <see cref="IDisposable"/>: boxing a
+        /// <see cref="Datagram"/> would allocate. The pump guarantees one call via finally.</para>
+        /// </remarks>
+        /// <param name="datagram">待归还的数据报<para>Datagram to release</para></param>
+        void Release(Datagram datagram);
+
+        /// <summary>
         /// 停止监听并释放 IO 资源（可重复调用）。
         /// <para>Stop listening and release IO resources (idempotent).</para>
         /// </summary>

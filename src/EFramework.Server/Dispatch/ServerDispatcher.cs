@@ -127,7 +127,11 @@ namespace EasyFramework.Server
                 TMessage message = context.Deserialize<TMessage>();
                 if (message == null)
                 {
-                    _logger?.Warn($"[DISPATCH] opcode {opcode} carried an empty payload, skipped (session {context.SessionId})");
+                    if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                    {
+                        _logger.Warn($"[DISPATCH] opcode {opcode} carried an empty payload, skipped (session {context.SessionId})");
+                    }
+
                     return;
                 }
 
@@ -170,7 +174,12 @@ namespace EasyFramework.Server
         {
             if (!_handlers.TryGetValue(packet.Opcode, out Action<MessageContext> handler))
             {
-                _logger?.Debug($"[DISPATCH] no handler for opcode {packet.Opcode} (session {session.SessionId})");
+                // 未注册的 Opcode 是常见噪音（扫描器、新旧客户端混跑），先问级别再拼字符串
+                if (_logger?.IsEnabled(LogLevel.Debug) == true)
+                {
+                    _logger.Debug($"[DISPATCH] no handler for opcode {packet.Opcode} (session {session.SessionId})");
+                }
+
                 return;
             }
 
