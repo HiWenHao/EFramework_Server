@@ -81,6 +81,8 @@ namespace EasyFramework.Http
                 Handled = server.Dispatcher.HandledCount,
                 Failed = server.Dispatcher.FailedCount,
                 TickIntervalMs = server.Options.TickIntervalMs,
+                ActualTickIntervalMs = server.ActualTickIntervalMs,
+                ActualTickWorkMs = server.ActualTickWorkMs,
             });
         }
 

@@ -53,10 +53,23 @@ namespace EasyFramework.Http
         public long Failed { get; set; }
 
         /// <summary>
-        /// 消息泵周期（毫秒）
-        /// <para>Pump tick interval in milliseconds</para>
+        /// 消息泵周期（配置值，毫秒）
+        /// <para>Configured pump tick interval in milliseconds</para>
         /// </summary>
         public int TickIntervalMs { get; set; }
+
+        /// <summary>
+        /// 实测节拍间隔（毫秒，滑动平均）；明显大于配置值说明系统计时器精度在拖后腿
+        /// <para>Measured tick interval (ms, moving average); a visible gap versus the configured value means
+        /// the OS timer resolution is the bottleneck</para>
+        /// </summary>
+        public double ActualTickIntervalMs { get; set; }
+
+        /// <summary>
+        /// 每拍实际工作耗时（毫秒，滑动平均）；接近 tickIntervalMs 说明泵是计算瓶颈
+        /// <para>Actual per-tick work time (ms, EMA); close to tickIntervalMs means the pump is compute-bound</para>
+        /// </summary>
+        public double ActualTickWorkMs { get; set; }
 
         #endregion
     }

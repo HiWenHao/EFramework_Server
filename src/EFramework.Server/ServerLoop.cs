@@ -46,9 +46,32 @@ namespace EasyFramework.Server
         private int _pumpThreadId;
         private int _consecutiveFailures;
 
+        // 实测节拍间隔（指数滑动平均）：暴露出去才能回答"tick 到底是不是 10ms"
+        private double _lastTickStart;
+        private double _actualTickIntervalMs;
+        private double _actualWorkMs;
+        private long _ticks;
+        private bool _tickDriftWarned;
+
         #endregion
 
         #region Properties
+
+        /// <summary>
+        /// 实际节拍间隔（毫秒，指数滑动平均）。它可能明显大于配置值 —— 例如 Windows 默认计时器精度约 15.6ms，
+        /// 配置 10ms 的等待实际会睡 15ms 左右。
+        /// <para>Actual tick interval in ms (exponential moving average). It can exceed the configured value:
+        /// Windows' default timer resolution is about 15.6ms, so a configured 10ms wait really sleeps ~15ms.</para>
+        /// </summary>
+        public double ActualTickIntervalMs => _actualTickIntervalMs;
+
+        /// <summary>
+        /// 每拍里「真正干活」（收包 + 推进会话）的耗时（毫秒，指数滑动平均）。
+        /// 接近或超过节拍间隔说明泵已经是计算瓶颈，此时再调小 TickIntervalMs 只会让它更糟。
+        /// <para>Time actually spent working per tick (drain + advance sessions), EMA in ms. Approaching the
+        /// tick interval means the pump is compute-bound; shrinking TickIntervalMs would only make it worse.</para>
+        /// </summary>
+        public double ActualTickWorkMs => _actualWorkMs;
 
         /// <summary>
         /// 当前线程是否是消息泵线程（跨线程校验用；泵启动前恒为 false）
@@ -100,12 +123,51 @@ namespace EasyFramework.Server
 
             int intervalMs = Math.Max(1, _options.TickIntervalMs);
 
+            // 低于 16ms 的节拍在 Windows 上会被系统计时器精度吃掉（实测 10ms → 15.8ms），
+            // 所以先提精度再进循环；退出时自动恢复。
+            TimerResolutionScope timerScope = _options.HighResolutionTimer
+                ? TimerResolutionScope.TryRaise(1)
+                : null;
+
+            if (timerScope != null && _logger?.IsEnabled(LogLevel.Info) == true)
+            {
+                _logger.Info(timerScope.Raised
+                    ? "[LOOP] system timer resolution raised to 1ms (HighResolutionTimer)"
+                    : "[LOOP] system timer resolution not raised (non-Windows or unsupported); expect ~15.6ms granularity");
+            }
+
+            try
+            {
+                RunLoop(intervalMs, cancellationToken);
+            }
+            finally
+            {
+                timerScope?.Dispose();
+            }
+        }
+
+        private void RunLoop(int intervalMs, CancellationToken cancellationToken)
+        {
             // 复用取消标记的等待句柄做可中断休眠，避免 Thread.Sleep 拖慢停机
             WaitHandle cancellationWait = cancellationToken.WaitHandle;
 
             while (!cancellationToken.IsCancellationRequested)
             {
                 long startTicks = Stopwatch.GetTimestamp();
+
+                // 记录实测节拍间隔，用于判断「配置的 tick」是否真的被执行（Windows 上常常不是）
+                double tickStart = startTicks / (double)Stopwatch.Frequency;
+                if (_lastTickStart > 0d)
+                {
+                    double measuredMs = (tickStart - _lastTickStart) * 1000d;
+                    _actualTickIntervalMs = _actualTickIntervalMs <= 0d
+                        ? measuredMs
+                        : _actualTickIntervalMs * 0.9d + measuredMs * 0.1d;
+                }
+
+                _lastTickStart = tickStart;
+                _ticks++;
+                WarnOnTickDrift(intervalMs);
 
                 try
                 {
@@ -119,6 +181,8 @@ namespace EasyFramework.Server
                 }
 
                 double elapsedMs = (Stopwatch.GetTimestamp() - startTicks) * 1000d / Stopwatch.Frequency;
+                _actualWorkMs = _actualWorkMs <= 0d ? elapsedMs : _actualWorkMs * 0.9d + elapsedMs * 0.1d;
+
                 int sleepMs = intervalMs - (int)elapsedMs;
                 if (sleepMs > 0) cancellationWait.WaitOne(sleepMs);
             }
@@ -156,6 +220,23 @@ namespace EasyFramework.Server
             if (failures > 3 && failures % 300 != 0) return;
 
             _logger.Error($"[LOOP] tick failed (consecutive={failures}), continuing with the next tick.", exception);
+        }
+
+        // 节拍漂移告警：配置 10ms 却跑成 15.6ms 时，延迟上限与超时判定全部失真，必须让运维看见
+        private void WarnOnTickDrift(int configuredMs)
+        {
+            if (_tickDriftWarned || _ticks < 50 || _logger == null) return;
+            if (_actualTickIntervalMs <= configuredMs * 1.5d) return;
+
+            _tickDriftWarned = true;
+
+            if (_logger.IsEnabled(LogLevel.Warn))
+            {
+                _logger.Warn($"[LOOP] actual tick {_actualTickIntervalMs:F1}ms vs configured {configuredMs}ms — " +
+                             "the OS timer granularity is the floor (~15.6ms on Windows; timeBeginPeriod may be " +
+                             "ignored on Windows 11 24H2+). Use TickIntervalMs >= 16 on Windows, or run on Linux " +
+                             "where the configured value is honoured.");
+            }
         }
 
         #endregion

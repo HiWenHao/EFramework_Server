@@ -74,6 +74,21 @@ namespace EasyFramework.Server
         public int ReceiveQueueCapacity { get; set; } = 8192;
 
         /// <summary>
+        /// 是否在消息泵运行期间提高系统计时器精度（Windows 专用；默认开启）
+        /// <para>Whether to raise the system timer resolution while the pump runs (Windows only; on by default)</para>
+        /// </summary>
+        /// <remarks>
+        /// Windows 默认计时器周期约 15.6ms，配置 <see cref="TickIntervalMs"/> = 10 时实际会跑成 ~15.8ms
+        /// （实测值），所有回包白等几毫秒。开启后用 <c>timeBeginPeriod(1)</c> 把精度提到 1ms。
+        /// 代价：进程存活期间系统整体计时精度提高，省电机会减少；对延迟不敏感的挂机/聊天服可关掉。
+        /// <para>Windows' default timer period is ~15.6ms, so a configured 10ms tick really runs at ~15.8ms
+        /// (measured), making every reply wait a few extra milliseconds. Enabling this calls
+        /// timeBeginPeriod(1). Cost: the system-wide resolution stays raised for the process lifetime, reducing
+        /// power savings; latency-insensitive servers can turn it off.</para>
+        /// </remarks>
+        public bool HighResolutionTimer { get; set; } = true;
+
+        /// <summary>
         /// 单会话出站积压上限（KCP 待发段数，0 表示不限制）
         /// <para>Per-session outbound backlog cap in KCP segments (0 disables the cap)</para>
         /// </summary>

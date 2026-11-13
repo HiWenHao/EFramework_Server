@@ -9,7 +9,7 @@
 - 同一进程内还跑一个 **HTTP 管理面**（Kestrel），与游戏服只通过 `Post` / `PostAsync` 协作。
 
 > **想搞懂"为什么这么设计"** → 读 [`docs/design-decisions.md`](docs/design-decisions.md)。
-> 14 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
+> 15 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
 > 面向从客户端转服务端的工程师。代码能抄，判断力抄不了——代价那一段才是重点。
 
 ## 已验证结论
@@ -218,6 +218,7 @@ var server = new NetServer(new ServerOptions { RequireHandshake = true }, dispat
 | `ReceiveQueueCapacity` | `8192` | 内核 → 泵的缓冲，满则丢新包并计数 |
 | `MaxSendBacklogSegments` | `1024` | 单会话出站积压上限（KCP 段），超限即判定不可用并回收；`0` 关闭 |
 | `MaxMessagesPerSecond` | `512` | 单会话入站速率上限；超限丢弃并计数；`0` 关闭 |
+| `HighResolutionTimer` | `true` | 泵运行期间把系统计时器精度提到 1ms（Windows 专用，Win11 24H2 可能无效） |
 | `LogLevel` | `Info` | `Debug` 会打印每会话/每包细节 |
 
 两个会话级上限是「隔离」的最后一道：`Kcp.Send` 对发送队列长度没有上限，慢客户端或已掉线的客户端
@@ -323,6 +324,24 @@ curl -X POST "http://127.0.0.1:8080/admin/close/7?reason=kicked"
 拆的时候只需把 `EFramework.Http` 单独起一个进程，把 `Post` 换成 RPC/消息队列 —— 因为桥接层只有
 `GameServerBridge` 一个文件，改这一处即可。
 
+## 压测
+
+验证工程自带负载工具，复用与客户端一致的协议栈，测的是真实往返链路：
+
+```bash
+dotnet run --project tests/EFramework.Tests -- load 127.0.0.1 7777 \
+    --clients 100 --qps 10 --seconds 10 --stats-url http://127.0.0.1:8080/stats
+```
+
+本机实测（28 核 / Windows / loopback）关键结论：
+
+- **10k 消息/秒零丢包、零处理失败**，客户端 `recv` 与服务端 `handled` 逐条相等。
+- 10k/s 时泵每拍只花 **1.16ms**（16.4ms 节拍里占 7%）→ 算力有十倍余量。
+- p50 20~60ms **不能当成产品延迟**：其中装着两侧各一个 KCP 冲刷间隔、Windows 计时器精度和压测工具自身的调度噪声。
+
+**容量该看 `actualTickWorkMs / tickIntervalMs`（泵利用率），不是 msg/s。**
+方法与完整的「这些数字不能说明什么」，见 [`docs/load-test.md`](docs/load-test.md)。
+
 ## 延迟与调优
 
 单程延迟 ≈ 客户端 KCP 聚合间隔(10ms) + 服务端泵周期(`TickIntervalMs`) + 网络 RTT/2。
@@ -334,6 +353,11 @@ curl -X POST "http://127.0.0.1:8080/admin/close/7?reason=kicked"
 
 排查工具：`NetSession.DebugInfo`（KCP 内部水位）、`NetSession.WaitSnd`（持续增长 = 对端不回 ACK）、
 `ServerDispatcher.HandledCount / FailedCount`、`NetServer.RejectedByLimit`。
+
+最该盯的两个（都在 `/stats`）：
+
+- `actualTickIntervalMs`：节拍真实间隔。明显大于 `TickIntervalMs` 说明系统计时器精度在拖后腿。
+- `actualTickWorkMs`：**每拍真正干活的耗时**，除以上面那个就是泵利用率。> 70% 就该准备分片了。
 
 ### 收发路径的分配
 

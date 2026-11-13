@@ -9,6 +9,7 @@
 using System;
 using System.Text;
 using EFramework.Tests.Harness;
+using EFramework.Tests.Load;
 using EFramework.Tests.Tests;
 using EasyFramework.Server;
 using EasyFramework.Systems.Net;
@@ -39,6 +40,11 @@ namespace EFramework.Tests
                 return RunProbe(args);
             }
 
+            if (args.Length > 0 && string.Equals(args[0], "load", StringComparison.OrdinalIgnoreCase))
+            {
+                return RunLoad(args);
+            }
+
             Console.WriteLine("EFramework.Server verification");
             Console.WriteLine($"runtime: {Environment.Version}, os: {Environment.OSVersion}");
 
@@ -49,6 +55,25 @@ namespace EFramework.Tests
             ServerEndToEndTests.Run(runner);
 
             return runner.Summarize();
+        }
+
+        // 压测入口：load <host> <port> [--clients N] [--qps M] [--seconds T] [--mode echo|ping] ...
+        private static int RunLoad(string[] args)
+        {
+            LoadOptions options;
+            try
+            {
+                options = LoadOptions.Parse(args);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"bad arguments: {e.Message}");
+                Console.WriteLine("usage: load <host> <port> [--clients N] [--qps M] [--seconds T] " +
+                                  "[--mode echo|ping] [--size B] [--threads N] [--token T] [--stats-url URL]");
+                return 2;
+            }
+
+            return LoadRunner.Run(options);
         }
 
         // 手工探针：可选握手 → ping/pong → 示例回声，验证「启动即可被客户端直连」

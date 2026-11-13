@@ -118,6 +118,21 @@ namespace EasyFramework.Server
         /// </remarks>
         public IReadOnlyList<NetSession> Sessions => _router.Snapshot();
 
+        /// <summary>
+        /// 实测节拍间隔（毫秒，指数滑动平均）。与 <see cref="ServerOptions.TickIntervalMs"/> 的差距说明
+        /// 系统调度/计时器精度在拖后腿（Windows 默认约 15.6ms，配置 10ms 实际会睡 15ms 左右）。
+        /// <para>Actual tick interval in ms (EMA). A gap versus the configured value means scheduler/timer
+        /// resolution is the bottleneck (Windows defaults to ~15.6ms, so a 10ms tick really sleeps ~15ms).</para>
+        /// </summary>
+        public double ActualTickIntervalMs => _loop.ActualTickIntervalMs;
+
+        /// <summary>
+        /// 每拍的实际工作耗时（毫秒，滑动平均）。接近节拍间隔即表示泵是计算瓶颈。
+        /// <para>Actual per-tick work time in ms (EMA). Approaching the tick interval means the pump is
+        /// compute-bound.</para>
+        /// </summary>
+        public double ActualTickWorkMs => _loop.ActualTickWorkMs;
+
         #endregion
 
         #region Methods
