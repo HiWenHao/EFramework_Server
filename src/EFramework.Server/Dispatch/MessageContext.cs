@@ -52,6 +52,17 @@ namespace EasyFramework.Server
         public int SessionId => Session.SessionId;
 
         /// <summary>
+        /// 已鉴权的账号 Id（未鉴权时为 null）
+        /// <para>Authenticated account id (null when unauthenticated)</para>
+        /// </summary>
+        /// <remarks>
+        /// 这是服务端唯一可信的"我是谁"。消息体里客户端自报的 id 只能当提示，永远不能用它做权限判断。
+        /// <para>The only trustworthy "who am I" on the server. Any id inside a message body is a hint and must
+        /// never drive authorization decisions.</para>
+        /// </remarks>
+        public string AccountId => Session.AccountId;
+
+        /// <summary>
         /// 消息操作码
         /// <para>Message opcode</para>
         /// </summary>

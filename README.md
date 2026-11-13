@@ -9,7 +9,7 @@
 - 同一进程内还跑一个 **HTTP 管理面**（Kestrel），与游戏服只通过 `Post` / `PostAsync` 协作。
 
 > **想搞懂"为什么这么设计"** → 读 [`docs/design-decisions.md`](docs/design-decisions.md)。
-> 13 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
+> 14 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
 > 面向从客户端转服务端的工程师。代码能抄，判断力抄不了——代价那一段才是重点。
 
 ## 已验证结论
@@ -174,6 +174,37 @@ dispatcher.Register<LoginReq, LoginHandler>(new LoginHandler(logger));
 `MessageContext` 还提供 `Reply(opcode, payload)`（原始字节）、`Push<T>(msg)`（单向推送，不回包）、
 `GetString()` / `Deserialize<T>()`。服务端主动推送：`server.Broadcast(opcode, payload)` 或 `server.Send(sessionId, ...)`。
 
+## 鉴权
+
+默认是**开放模式**（`AcceptAllHandshakeValidator`），只适合内网联调。启用 HMAC 票据：
+
+```bash
+# 给密钥即强制握手；--dev-token 用同一密钥代签一张 1 小时票据（本地联调的"登录服替身"）
+dotnet run --project src/EFramework.App -- --auth-secret dev-secret --dev-token alice
+# 也可以用环境变量，避免密钥进命令行历史
+EF_AUTH_SECRET=dev-secret dotnet run --project src/EFramework.App -- --dev-token alice
+
+# 拿横幅里打印的票据去连
+dotnet run --project tests/EFramework.Tests -- probe 127.0.0.1 7777 "alice:<expires>:<signature>"
+```
+
+票据格式与两侧职责：
+
+```csharp
+// 登录服（HTTP 侧，持有签名密钥）：账号校验通过后签票
+string token = HandshakeToken.Create(accountId, TimeSpan.FromHours(1), secret);
+
+// 游戏服（UDP 侧，只验签、无签发能力）：注入校验器并置 RequireHandshake
+var validator = new HmacHandshakeValidator(secret, logger: logger);
+var server = new NetServer(new ServerOptions { RequireHandshake = true }, dispatcher, handshakeValidator: validator);
+```
+
+握手通过后 `NetSession.AccountId` / `MessageContext.AccountId` 就是**服务端认定的身份**；
+消息体里客户端自报的 id 只能当提示，**永远不能用来做权限判断**。
+
+原理（为什么 HMAC 不是密码、为什么游戏服不签发、为什么定长时间比较、代价）见
+[`docs/design-decisions.md`](docs/design-decisions.md) D14。
+
 ## 配置项
 
 | 参数 | 默认 | 说明 |
@@ -326,8 +357,9 @@ curl -X POST "http://127.0.0.1:8080/admin/close/7?reason=kicked"
 
 ## 已知约束（上生产前必做）
 
-1. **默认无鉴权**：`AcceptAllHandshakeValidator` 放行一切。公网部署必须实现 `IHandshakeValidator`，
-   并置 `RequireHandshake = true`。
+1. **默认放宽手**：`AcceptAllHandshakeValidator` 放行一切。公网部署必须换成
+   `HmacHandshakeValidator` 并置 `RequireHandshake = true`（见「鉴权」一节）。
+   票据当前**没有防重放**（同一张票在有效期内可重复使用），要严格就加一次性 nonce 表 + 短有效期。
 2. **conv 非随机**：客户端 conv 从 1 递增且明文，可被伪造。当前以端点隔离，风险可控；
    若要防会话劫持，建议改成"服务端分配 conv"或客户端随机 conv（需改客户端）。
 3. **单线程泵**：处理器必须快速返回，禁止同步 IO / `Thread.Sleep`。慢逻辑投递线程池后用

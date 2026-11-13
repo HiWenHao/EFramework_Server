@@ -8,11 +8,13 @@
 
 using System;
 using System.Net;
+using System.Text;
 using System.Threading.Tasks;
 using EFramework.App.Handlers;
 using EFramework.App.Messages;
 using EasyFramework.Http;
 using EasyFramework.Server;
+using EasyFramework.Server.Handshake;
 using EasyFramework.Server.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -44,21 +46,33 @@ namespace EFramework.App
             int httpPort = ParseIntOption(args, "--http-port", HttpServerOptions.DefaultPort);
             LogLevel logLevel = HasFlag(args, "--verbose") ? LogLevel.Debug : LogLevel.Info;
 
+            // 鉴权开关：给了密钥就强制握手；没给则保持"开放模式"并在横幅里明确警告
+            string authSecret = ParseStringOption(args, "--auth-secret", Environment.GetEnvironmentVariable("EF_AUTH_SECRET"));
+            bool authEnabled = !string.IsNullOrEmpty(authSecret);
+            byte[] secretBytes = authEnabled ? Encoding.UTF8.GetBytes(authSecret) : null;
+
+            string devTokenAccount = ParseStringOption(args, "--dev-token", null);
+
             var logger = new ConsoleServerLogger { Level = logLevel };
             var dispatcher = new ServerDispatcher(logger, new JsonMessageSerializer());
             dispatcher.Register<EchoReq, EchoHandler>(new EchoHandler(logger));
 
+            IHandshakeValidator validator = authEnabled
+                ? new HmacHandshakeValidator(secretBytes, logger: logger)
+                : null;
+
             using var server = new NetServer(
-                new ServerOptions { Port = udpPort, LogLevel = logLevel },
+                new ServerOptions { Port = udpPort, LogLevel = logLevel, RequireHandshake = authEnabled },
                 dispatcher,
-                logger: logger);
+                logger: logger,
+                handshakeValidator: validator);
 
             server.SessionOpened += session =>
                 logger.Info($"[SESSION+] id={session.SessionId} remote={session.RemoteEndPointText} conv={session.Conv}");
 
             server.SessionClosed += (session, reason) =>
                 logger.Info($"[SESSION-] id={session.SessionId} remote={session.RemoteEndPointText} reason={reason} " +
-                            $"rx={session.ReceivedMessages} tx={session.SentMessages}");
+                            $"rx={session.ReceivedMessages} tx={session.SentMessages} account={session.AccountId ?? "-"}");
 
             var httpOptions = new HttpServerOptions { Port = httpPort };
             httpOptions.Validate();
@@ -90,7 +104,7 @@ namespace EFramework.App
                 return 1;
             }
 
-            PrintBanner(server, httpOptions, logLevel);
+            PrintBanner(server, httpOptions, logLevel, authEnabled, secretBytes, devTokenAccount);
 
             // Ctrl+C / SIGTERM 由通用主机处理，这里只等它结束
             await web.WaitForShutdownAsync().ConfigureAwait(false);
@@ -100,7 +114,8 @@ namespace EFramework.App
             return 0;
         }
 
-        private static void PrintBanner(NetServer server, HttpServerOptions httpOptions, LogLevel logLevel)
+        private static void PrintBanner(NetServer server, HttpServerOptions httpOptions, LogLevel logLevel,
+            bool authEnabled, byte[] secretBytes, string devTokenAccount)
         {
             Console.WriteLine();
             Console.WriteLine("==============================================================");
@@ -110,11 +125,22 @@ namespace EFramework.App
             Console.WriteLine($"  HTTP (mgmt)  : http://{httpOptions.BindAddress}:{httpOptions.Port}");
             Console.WriteLine($"  Tick         : {server.Options.TickIntervalMs} ms");
             Console.WriteLine($"  Log level    : {logLevel}");
+            Console.WriteLine($"  Auth         : {(authEnabled ? "HMAC-SHA256 握手（必须）" : "开放模式（不鉴权，仅限内网）")}");
             Console.WriteLine("  Built-in     : opcode 1 Ping -> 2 Pong / 4 Handshake -> 5 Result");
             Console.WriteLine("  Business     : opcode 1001 EchoReq -> 1002 EchoRes");
             Console.WriteLine("--------------------------------------------------------------");
+
+            if (!string.IsNullOrEmpty(devTokenAccount) && secretBytes != null)
+            {
+                // 仅用于本地联调：真实流程应由登录服签发，这里用同一密钥代签一张 1 小时票据
+                string devToken = HandshakeToken.Create(devTokenAccount, TimeSpan.FromHours(1), secretBytes);
+                Console.WriteLine("  Dev token (login service stand-in, 1h):");
+                Console.WriteLine($"    probe 127.0.0.1 {server.LocalEndPoint.Port} \"{devToken}\"");
+                Console.WriteLine("--------------------------------------------------------------");
+            }
+
             Console.WriteLine("  Unity client (cn.efefef.net):");
-            Console.WriteLine($"    NetworkManager.Instance.Connect(\"127.0.0.1\", {server.LocalEndPoint.Port});");
+            Console.WriteLine($"    NetworkManager.Instance.Connect(\"127.0.0.1\", {server.LocalEndPoint.Port}{(authEnabled ? ", token: <token>" : string.Empty)});");
             Console.WriteLine("  Admin (management plane):");
             Console.WriteLine($"    curl http://127.0.0.1:{httpOptions.Port}/health");
             Console.WriteLine($"    curl -X POST \"http://127.0.0.1:{httpOptions.Port}/admin/broadcast?opcode=1003\" --data-binary hi");
@@ -124,13 +150,24 @@ namespace EFramework.App
             Console.WriteLine();
         }
 
-        // 参数：--port <UDP 端口>、--http-port <HTTP 端口>、--verbose
+        // 参数：--port <UDP 端口>、--http-port <HTTP 端口>、--auth-secret <密钥>、--dev-token <账号>、--verbose
         private static int ParseIntOption(string[] args, string option, int fallback)
         {
             for (int i = 0; i < args.Length; i++)
             {
                 if (!string.Equals(args[i], option, StringComparison.OrdinalIgnoreCase)) continue;
                 if (i + 1 < args.Length && int.TryParse(args[i + 1], out int parsed)) return parsed;
+            }
+
+            return fallback;
+        }
+
+        private static string ParseStringOption(string[] args, string option, string fallback)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (!string.Equals(args[i], option, StringComparison.OrdinalIgnoreCase)) continue;
+                if (i + 1 < args.Length) return args[i + 1];
             }
 
             return fallback;

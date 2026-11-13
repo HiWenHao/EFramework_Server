@@ -72,6 +72,17 @@ namespace EasyFramework.Server
         // 握手：校验 Token → 回执结果 → 通过则放行，拒绝则延迟关闭（先让回执冲刷出去）
         private void HandleHandshake(MessageContext context)
         {
+            // 已鉴权的会话不允许再用另一张票据改写身份 —— 否则抓到一张有效票据就能顶掉在线玩家
+            if (!string.IsNullOrEmpty(context.Session.AccountId))
+            {
+                if (_logger?.IsEnabled(LogLevel.Warn) == true)
+                {
+                    _logger.Warn($"[SESSION {context.SessionId}] re-handshake ignored: already authenticated as {context.AccountId}");
+                }
+
+                return;
+            }
+
             ReadOnlySpan<byte> token = context.PayloadLength > 0
                 ? new ReadOnlySpan<byte>(context.Payload, 0, context.PayloadLength)
                 : ReadOnlySpan<byte>.Empty;
@@ -92,11 +103,24 @@ namespace EasyFramework.Server
             if (result.IsSuccess)
             {
                 context.Session.State = NetSessionState.Ready;
-                _logger?.Info($"[SESSION {context.SessionId}] handshake accepted ({context.RemoteEndPoint})");
+
+                // 把身份写进会话：业务层据此判断"这条连接是谁"，不再信任客户端自报的 Id
+                if (!string.IsNullOrEmpty(result.Subject)) context.Session.AccountId = result.Subject;
+
+                if (_logger?.IsEnabled(LogLevel.Info) == true)
+                {
+                    string subject = string.IsNullOrEmpty(result.Subject) ? "anonymous" : result.Subject;
+                    _logger.Info($"[SESSION {context.SessionId}] handshake accepted as {subject} ({context.RemoteEndPoint})");
+                }
+
                 return;
             }
 
-            _logger?.Warn($"[SESSION {context.SessionId}] handshake {result} ({context.RemoteEndPoint})");
+            if (_logger?.IsEnabled(LogLevel.Warn) == true)
+            {
+                _logger.Warn($"[SESSION {context.SessionId}] handshake {result} ({context.RemoteEndPoint})");
+            }
+
             context.Session.RequestClose($"Handshake {result}");
         }
 

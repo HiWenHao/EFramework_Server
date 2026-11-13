@@ -38,6 +38,18 @@ namespace EasyFramework.Server.Handshake
         public string Message { get; }
 
         /// <summary>
+        /// 通过后绑定的身份主体（账号 Id 等；未通过或匿名时为空）
+        /// <para>Subject bound on acceptance (account id, etc.; empty when rejected or anonymous)</para>
+        /// </summary>
+        /// <remarks>
+        /// 握手不只是"放行/拒绝"，还要把"你是谁"告诉会话 —— 否则业务层拿不到账号，只能信任客户端
+        /// 自己报的 Id。这是鉴权能真正生效的关键一步。
+        /// <para>A handshake does more than admit or reject: it tells the session who the peer is. Without it
+        /// business code can only trust whatever id the client claims.</para>
+        /// </remarks>
+        public string Subject { get; }
+
+        /// <summary>
         /// 是否通过
         /// <para>Whether the handshake was accepted</para>
         /// </summary>
@@ -49,6 +61,17 @@ namespace EasyFramework.Server.Handshake
         /// </summary>
         public static HandshakeResult Success => new HandshakeResult(0, string.Empty);
 
+        /// <summary>
+        /// 通过结论，并绑定身份主体（推荐用于鉴权通过）。
+        /// <para>An acceptance verdict bound to a subject (preferred when authentication succeeded).</para>
+        /// </summary>
+        /// <param name="subject">身份主体（账号 Id 等）<para>Subject (account id, etc.)</para></param>
+        /// <returns>通过结论<para>An acceptance verdict</para></returns>
+        public static HandshakeResult Accept(string subject)
+        {
+            return new HandshakeResult(0, string.Empty, subject);
+        }
+
         #endregion
 
         #region Methods
@@ -59,13 +82,15 @@ namespace EasyFramework.Server.Handshake
         /// </summary>
         /// <param name="code">结果码（0~255）<para>Result code (0~255)</para></param>
         /// <param name="message">失败原因，可为空<para>Failure reason; may be empty</para></param>
-        public HandshakeResult(int code, string message)
+        /// <param name="subject">身份主体，可为空<para>Subject; may be empty</para></param>
+        public HandshakeResult(int code, string message, string subject = null)
         {
             if (code is < 0 or > 255)
                 throw new ArgumentOutOfRangeException(nameof(code), code, "Handshake code must fit in one byte (0~255).");
 
             Code = code;
             Message = message ?? string.Empty;
+            Subject = subject ?? string.Empty;
         }
 
         /// <summary>

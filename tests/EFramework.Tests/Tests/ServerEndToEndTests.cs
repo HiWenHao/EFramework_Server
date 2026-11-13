@@ -366,6 +366,84 @@ namespace EFramework.Tests.Tests
                     $"close reason should mention the backlog, got: {reason}");
             });
 
+            runner.Run("HMAC handshake accepts a fresh token and binds the account", () =>
+            {
+                byte[] secret = Encoding.UTF8.GetBytes("unit-test-secret");
+                using var fixture = new ServerFixture(
+                    options => options.RequireHandshake = true,
+                    new HmacHandshakeValidator(secret));
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                string token = HandshakeToken.Create("alice", TimeSpan.FromMinutes(5), secret);
+                client.Send(NetOpcode.Handshake, 0, Encoding.UTF8.GetBytes(token));
+
+                NetPacket result = client.WaitFor(NetOpcode.HandshakeResult);
+                Assert.Equal(0, result.Payload[0], "fresh token must be accepted");
+
+                // 业务消息应能通过，且服务端能说出"这条连接是谁"
+                client.Send(EchoReqOpcode, 11, Json.Serialize(new TestEchoReq { Content = "after-auth" }));
+                NetPacket response = client.WaitFor(
+                    packet => packet.Opcode == EchoResOpcode && packet.RpcId == 11, "echo after auth");
+
+                var body = Json.Deserialize<TestEchoRes>(response.Payload, 0, response.PayloadLength);
+                Assert.NotNull(body, "response body");
+                Assert.Equal("alice", body.AccountId, "the session must carry the authenticated account id");
+            });
+
+            runner.Run("HMAC handshake rejects a tampered signature", () =>
+            {
+                byte[] secret = Encoding.UTF8.GetBytes("unit-test-secret");
+                using var fixture = new ServerFixture(
+                    options => options.RequireHandshake = true,
+                    new HmacHandshakeValidator(secret));
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                string token = HandshakeToken.Create("alice", TimeSpan.FromMinutes(5), secret);
+                char last = token[token.Length - 1];
+                string tampered = token.Substring(0, token.Length - 1) + (last == 'a' ? 'b' : 'a');
+
+                client.Send(NetOpcode.Handshake, 0, Encoding.UTF8.GetBytes(tampered));
+
+                NetPacket result = client.WaitFor(NetOpcode.HandshakeResult);
+                Assert.True(result.Payload[0] != 0, "a tampered signature must be rejected");
+                Assert.True(WaitUntil(() => fixture.Server.SessionCount == 0, 3000),
+                    "the rejected session must be reclaimed");
+            });
+
+            runner.Run("HMAC handshake rejects an expired token", () =>
+            {
+                byte[] secret = Encoding.UTF8.GetBytes("unit-test-secret");
+                using var fixture = new ServerFixture(
+                    options => options.RequireHandshake = true,
+                    new HmacHandshakeValidator(secret));
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                // 一张签名正确但已经过期一小时的票据
+                long expiredAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3600;
+                string token = HandshakeToken.Create("alice", expiredAt, secret);
+                client.Send(NetOpcode.Handshake, 0, Encoding.UTF8.GetBytes(token));
+
+                NetPacket result = client.WaitFor(NetOpcode.HandshakeResult);
+                Assert.True(result.Payload[0] != 0, "an expired token must be rejected");
+
+                string reason = Encoding.UTF8.GetString(result.Payload, 1, result.PayloadLength - 1);
+                Assert.True(reason.Contains("expired", StringComparison.OrdinalIgnoreCase),
+                    $"the reason should tell the client to re-login, got: {reason}");
+            });
+
+            runner.Run("Business messages are dropped before the handshake", () =>
+            {
+                using var fixture = new ServerFixture(options => options.RequireHandshake = true);
+                using var client = new ProtocolClient("127.0.0.1", fixture.Port, 1);
+
+                // 没握手就发业务消息：必须被门禁静默丢弃（不回包、不断连）
+                client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes(1L));
+
+                Assert.Throws<TimeoutException>(() => client.WaitFor(NetOpcode.Pong, 400),
+                    "a pong before the handshake would mean the gate is not enforced");
+                Assert.Equal(1, fixture.Server.SessionCount, "the session itself must stay alive");
+            });
+
             runner.Run("StopAsync closes live sessions with a reason", () =>
             {
                 var reasons = new List<string>();
@@ -486,6 +564,7 @@ namespace EFramework.Tests.Tests
                 {
                     Content = message.Content,
                     SessionId = context.SessionId,
+                    AccountId = context.AccountId,
                 });
             }
 
@@ -542,21 +621,27 @@ namespace EFramework.Tests.Tests
         #endregion
     }
 
-    /// <summary>
-    /// 测试用响应消息。
-    /// <para>Test response message.</para>
-    /// </summary>
-    [NetOpcode(2002)]
-    internal sealed class TestEchoRes
-    {
-        #region Properties
+        /// <summary>
+        /// 测试用响应消息。
+        /// <para>Test response message.</para>
+        /// </summary>
+        [NetOpcode(2002)]
+        internal sealed class TestEchoRes
+        {
+            #region Properties
 
-        public string Content { get; set; }
+            public string Content { get; set; }
 
-        public int SessionId { get; set; }
+            public int SessionId { get; set; }
 
-        #endregion
-    }
+            /// <summary>
+            /// 服务端认定的身份（用于验证握手把账号写进了会话）
+            /// <para>Identity as seen by the server (proves the handshake bound the account to the session)</para>
+            /// </summary>
+            public string AccountId { get; set; }
+
+            #endregion
+        }
 
     /// <summary>
     /// 测试用跨线程请求消息。

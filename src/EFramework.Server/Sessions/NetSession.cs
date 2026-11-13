@@ -118,6 +118,16 @@ namespace EasyFramework.Server.Sessions
         public string RemoteEndPointText => _remoteEndPointText;
 
         /// <summary>
+        /// 已通过握手校验的身份主体（账号 Id）；未鉴权时为 null
+        /// <para>Verified subject (account id) after the handshake; null when unauthenticated</para>
+        /// </summary>
+        /// <remarks>
+        /// 业务层应当用这个值判断"这条连接是谁"，而不是相信客户端在消息里自报的 Id —— 后者可以随便填。
+        /// <para>Business code must use this instead of an id the client claims in a message.</para>
+        /// </remarks>
+        public string AccountId { get; internal set; }
+
+        /// <summary>
         /// 当前状态
         /// <para>Current state</para>
         /// </summary>

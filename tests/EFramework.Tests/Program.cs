@@ -51,17 +51,37 @@ namespace EFramework.Tests
             return runner.Summarize();
         }
 
-        // 手工探针：ping/pong + 示例回声，验证「启动即可被客户端直连」
+        // 手工探针：可选握手 → ping/pong → 示例回声，验证「启动即可被客户端直连」
         private static int RunProbe(string[] args)
         {
             string host = args.Length > 1 ? args[1] : "127.0.0.1";
             int port = args.Length > 2 && int.TryParse(args[2], out int parsed) ? parsed : ServerOptions.DefaultPort;
+            string token = args.Length > 3 ? args[3] : null;
 
-            Console.WriteLine($"Probe -> {host}:{port}");
+            Console.WriteLine($"Probe -> {host}:{port}{(string.IsNullOrEmpty(token) ? string.Empty : " (with handshake token)")}");
 
             try
             {
                 using var client = new ProtocolClient(host, port, 1);
+
+                if (!string.IsNullOrEmpty(token))
+                {
+                    client.Send(NetOpcode.Handshake, 0, Encoding.UTF8.GetBytes(token));
+
+                    NetPacket handshake = client.WaitFor(NetOpcode.HandshakeResult, 3000);
+                    int code = handshake.PayloadLength > 0 ? handshake.Payload[0] : -1;
+                    string reason = handshake.PayloadLength > 1
+                        ? Encoding.UTF8.GetString(handshake.Payload, 1, handshake.PayloadLength - 1)
+                        : string.Empty;
+
+                    Console.WriteLine($"  [{(code == 0 ? "OK" : "FAIL")}] Handshake code={code} reason=\"{reason}\"");
+
+                    if (code != 0)
+                    {
+                        Console.WriteLine("Probe FAILED: handshake rejected");
+                        return 1;
+                    }
+                }
 
                 long stamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 client.Send(NetOpcode.Ping, 0, BitConverter.GetBytes(stamp));
