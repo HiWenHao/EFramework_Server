@@ -105,7 +105,20 @@ Kcp.cs  MessagePipe.cs  NetOpcode.cs  NetProtocolException.cs
 4. `dispatcher.Register<TReq, THandler>()` 注册。
 5. 补一条端到端用例（发送 → 等待 → 断言），跑 `tests`。
 
-## 7. 文档同步
+## 7. 新增 HTTP 接口
+
+**不要直接写服务端端点**，顺序固定：
+
+1. 改契约 `contracts/*.json`（新增 endpoint / 字段）；
+2. `python tools/gen-http-api.py` 生成双端代码；
+3. 在 `src/EFramework.Http/Api/` 下手写实现（实现生成的 `I<Api>` 接口）；
+4. 在 `src/EFramework.App/Program.cs` 里 `web.Map<Api>(new <Api>(...))`；
+5. `python tools/gen-http-api.py --check` 确认无漂移。
+
+生成物（`*.g.cs`）永不手改。业务失败用 body 里的 `Code`/`Message`，不要用 HTTP 状态码表达。
+详见 [`docs/http-codegen.md`](docs/http-codegen.md)。
+
+## 8. 文档同步
 
 改动下列内容时，同一次提交里更新 README：
 

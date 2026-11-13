@@ -8,11 +8,14 @@
 - 单线程消息泵：所有 KCP 状态与业务处理器跑在同一线程，会话无需加锁。
 - 同一进程内还跑一个 **HTTP 管理面**（Kestrel），与游戏服只通过 `Post` / `PostAsync` 协作。
 
+> **要加 HTTP 接口？** → 读 [`docs/http-codegen.md`](docs/http-codegen.md)。
+> 改 `contracts/*.json`，一条命令生成服务端 + 客户端 DTO、路径常量与调用封装。
+>
 > **不知道怎么验证？** → 读 [`docs/testing.md`](docs/testing.md)。
 > 四层测试面（dotnet 用例 → 命令行探针 → Unity 测试面板 → 压测）+ 一张「现象 → 原因」排查表。
 >
 > **想搞懂"为什么这么设计"** → 读 [`docs/design-decisions.md`](docs/design-decisions.md)。
-> 15 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
+> 16 条架构决策 + 一张服务器思维速查表，每条都按「问题 → 备选 → 选择 → 代价」写，
 > 面向从客户端转服务端的工程师。代码能抄，判断力抄不了——代价那一段才是重点。
 
 ## 已验证结论
@@ -51,8 +54,10 @@ dotnet run --project tests/EFramework.Tests -- probe 127.0.0.1 7777
 #    会自带一个测试面板（Assets/NetSmokeTest），填 127.0.0.1 + 7777 点 Connect/Ping/Echo
 #    详见 docs/testing.md L3
 
-# 5. 管理面（HTTP）
+# 5. 管理面（HTTP）+ 契约生成的登录接口
 curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/api/version
+curl -X POST http://127.0.0.1:8080/api/login -H "Content-Type: application/json" -d "{\"account\":\"demo\",\"password\":\"demo\"}"
 curl http://127.0.0.1:8080/sessions
 curl -X POST "http://127.0.0.1:8080/admin/broadcast?opcode=1003" --data-binary "hello"
 
@@ -77,13 +82,17 @@ EFramework_Server/
 │  │  ├─ Handshake/                   # IHandshakeValidator + 默认放行实现
 │  │  └─ Logging/, Serialization/      # 控制台日志 + System.Text.Json 序列化器
 │  ├─ EFramework.Http/                # HTTP 宿主（net8.0 + Kestrel，仅管理面）
+│  │  ├─ Api/                         # HTTP 接口：手写实现 + Generated/（契约生成物）
 │  │  ├─ GameServerBridge.cs          # HTTP ↔ 游戏服唯一桥（Post / PostAsync）
 │  │  ├─ GameNetHostedService.cs      # 把 UDP 游戏服挂到通用主机生命周期
 │  │  ├─ HttpEndpoints.cs             # /health /stats /sessions /admin/*
 │  │  └─ HttpServerOptions.cs         # 绑定地址与端口
 │  └─ EFramework.App/                 # 可执行入口 + Echo 示例业务（两个宿主的组合根）
-├─ tests/EFramework.Tests/            # 零依赖验证工程（同时是协议探针）
-└─ tools/sync-protocol.py             # 从 Unity 包重新同步协议文件的脚本
+├─ contracts/                         # HTTP 接口契约（单一真相源，双端代码由它生成）
+├─ tests/EFramework.Tests/            # 零依赖验证工程（协议探针 + 压测工具）
+└─ tools/
+   ├─ sync-protocol.py                # 从 Unity 包同步协议文件（UDP 层）
+   └─ gen-http-api.py                 # 从契约生成双端 HTTP 代码（接口层）
 ```
 
 依赖方向单向：`App → Http → Server → Net`，`Net` 不引用任何服务端类型，`Server` 不引用 ASP.NET。
@@ -211,6 +220,31 @@ var server = new NetServer(new ServerOptions { RequireHandshake = true }, dispat
 
 原理（为什么 HMAC 不是密码、为什么游戏服不签发、为什么定长时间比较、代价）见
 [`docs/design-decisions.md`](docs/design-decisions.md) D14。
+
+## HTTP 接口：契约驱动的双端代码
+
+接口定义写在 `contracts/*.json`，一条命令生成服务端与客户端两边的代码：
+
+```bash
+python tools/gen-http-api.py            # 生成
+python tools/gen-http-api.py --check    # 校验；漂移退出码 1（可挂 CI）
+```
+
+生成物（永不手改）：DTO、路径常量、服务端接口 `ILoginApi` 与路由映射 `MapLoginApi`、客户端 `LoginApiClient`。
+手写的只有业务实现（`src/EFramework.Http/Api/LoginApi.cs`）。
+
+真实的登录闭环（已实测）：
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/login \
+     -H "Content-Type: application/json" -d "{\"account\":\"demo\",\"password\":\"demo\"}"
+# → {"code":0,"token":"demo:1794560062:14b1...","expiresAtUnix":1794560062}
+
+# 拿这张票据去连 UDP（游戏服只验签，签发权只在登录侧）
+dotnet run --project tests/EFramework.Tests -- probe 127.0.0.1 7777 "demo:1794560062:14b1..."
+```
+
+约束与不支持项（v1 只生成 GET/POST、标量字段）见 [`docs/http-codegen.md`](docs/http-codegen.md)。
 
 ## 配置项
 

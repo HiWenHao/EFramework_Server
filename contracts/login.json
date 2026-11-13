@@ -1,0 +1,88 @@
+{
+  "api": "LoginApi",
+  "title": "登录与配置：HTTP 短请求（发握手票据、下发客户端配置）",
+  "endpoints": [
+    {
+      "id": "Login",
+      "method": "POST",
+      "path": "/api/login",
+      "summary": "账号密码登录，成功后返回握手票据（拿去连 UDP 游戏服）",
+      "request": {
+        "type": "LoginReq",
+        "fields": [
+          {
+            "name": "Account",
+            "type": "string",
+            "comment": "账号"
+          },
+          {
+            "name": "Password",
+            "type": "string",
+            "comment": "密码（生产必须走 HTTPS + 加盐哈希，这里只做流程演示）"
+          }
+        ]
+      },
+      "response": {
+        "type": "LoginRes",
+        "fields": [
+          {
+            "name": "Code",
+            "type": "int",
+            "comment": "业务结果码：0=成功，非 0 见服务端错误码"
+          },
+          {
+            "name": "Message",
+            "type": "string",
+            "comment": "失败原因（成功时为空）"
+          },
+          {
+            "name": "Token",
+            "type": "string",
+            "comment": "握手票据：account:expires:signature，交给 NetworkManager.Connect"
+          },
+          {
+            "name": "AccountId",
+            "type": "string",
+            "comment": "规范化后的账号 Id"
+          },
+          {
+            "name": "ExpiresAtUnix",
+            "type": "long",
+            "comment": "票据过期时刻（Unix 秒）"
+          },
+          {
+            "name": "ServerVersion",
+            "type": "string",
+            "comment": "服务端版本，便于客户端提示强制更新"
+          }
+        ]
+      }
+    },
+    {
+      "id": "Version",
+      "method": "GET",
+      "path": "/api/version",
+      "summary": "取服务端版本与运行状态（客户端启动自检、公告用）",
+      "response": {
+        "type": "VersionRes",
+        "fields": [
+          {
+            "name": "Version",
+            "type": "string",
+            "comment": "框架版本（与客户端包版本一致）"
+          },
+          {
+            "name": "UptimeSeconds",
+            "type": "long",
+            "comment": "已运行秒数"
+          },
+          {
+            "name": "Sessions",
+            "type": "int",
+            "comment": "当前 UDP 会话数"
+          }
+        ]
+      }
+    }
+  ]
+}
