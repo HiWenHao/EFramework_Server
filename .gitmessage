@@ -1,0 +1,31 @@
+# <type>(<scope>): <50 字以内说清做了什么>
+#
+# 为什么这么做 / 影响面（可空，但「为什么」比「做了什么」更值钱）：
+#
+# 验证：dotnet build 0 warning；tests N/17；改协议层时 sync-protocol.py --check 通过
+#
+# ---------------------------------------------------------------
+# type（必填，取一个）
+#   feat      新增能力（对外行为变化）
+#   fix       修复缺陷
+#   refactor  重构，行为不变
+#   perf      性能优化
+#   test      测试相关
+#   docs      文档
+#   build     构建/依赖/工程配置
+#   chore     杂务（脚本、忽略规则、CI）
+#   revert    回滚
+#
+# scope（建议填，对应目录或子系统）
+#   net       协议契约层（KCP / 帧格式 / Opcode）
+#   server    服务端运行时（会话、分发、宿主）
+#   app       可执行入口与示例业务
+#   tests     验证工程
+#   tools     脚手架与同步脚本
+#   build     props / sln / CI
+#
+# 示例
+#   feat(server): 支持服务端主动向单会话推送
+#   fix(net): 修复 4 字节以上 Opcode 解码符号位错误
+#   chore(tools): sync-protocol 增加 --check 供 CI 校验漂移
+# ---------------------------------------------------------------

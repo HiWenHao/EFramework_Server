@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""把客户端 cn.efefef.net 的纯 C# 协议文件逐字节复制到服务端契约层，并补一行同步来源标注。
+"""把客户端 cn.efefef.net 的纯 C# 协议文件复制到服务端契约层，并补一行同步来源标注。
 
-保持字节级一致是刻意设计：KCP 是「线」上协议，任何一行差异都会导致两侧不通。
+内容必须与客户端逐字一致：KCP 是「线」上协议，任何一行差异都会让两侧不通。
+换行不计入比较（仓库内由 .gitattributes 统一存 LF，工作区换行跟随平台）。
 
 用法：
     python tools/sync-protocol.py                      # 用默认 Unity 包路径同步
     python tools/sync-protocol.py --package <包目录>    # 指定 cn.efefef.net 包目录
-    python tools/sync-protocol.py --check              # 只校验不写入，漂移时退出码 1（可用于 CI）
+    python tools/sync-protocol.py --check              # 只校验不写入，漂移时退出码 1
 
 Unity 包目录也可用环境变量 EF_NET_PACKAGE 指定，避免每次敲参数。
 """
@@ -49,6 +50,15 @@ def add_marker(data, name):
         + b" (do not edit locally)\r\n"
     )
     return data[:line_end] + note + data[line_end:]
+
+
+def normalize(data):
+    """比较前抹平换行差异。
+
+    仓库内由 .gitattributes 统一存 LF，但工作区换行跟随检出平台（Windows 为 CRLF），
+    源文件又始终来自 Unity 包（CRLF）。若按字节硬比，Linux/CI 上会误报漂移。
+    """
+    return data.replace(b"\r\n", b"\n")
 
 
 def main(argv):
@@ -99,7 +109,7 @@ def main(argv):
             with open(dst_path, "rb") as f:
                 current = f.read()
 
-        if current == expected:
+        if current is not None and normalize(current) == normalize(expected):
             unchanged += 1
             print(f"  unchanged  {name}")
             continue

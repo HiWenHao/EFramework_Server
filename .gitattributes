@@ -1,0 +1,55 @@
+# ============================================================
+# 换行与二进制归一
+# 目标：仓库内统一存 LF；工作区按平台/文件类型检出，不再依赖个人的 core.autocrlf。
+#
+# 注意：src/EFramework.Net/Protocol/*.cs 不要标 -text。
+# 这些文件由 tools/sync-protocol.py 从 Unity 包逐字节复制，标 -text 会让工作区换行
+# 跟随 checkout 平台变化，造成同步脚本误报「漂移」。走 text 归一即可：
+# 工作区 CRLF 与 blob LF 在 Git 看来内容一致，git status 保持干净。
+# ============================================================
+
+* text=auto
+
+# ---------------- 源码 / 工程 ----------------
+*.cs        text
+*.csproj    text
+*.props     text
+*.targets   text
+*.sln       text eol=crlf
+*.json      text
+*.xml       text
+*.config    text
+*.md        text
+
+# ---------------- 脚本 ----------------
+# Python / Shell 一律 LF，保证在 WSL / Linux / CI 上可直接执行
+*.py        text eol=lf
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+# Windows 批处理与 PowerShell 必须 CRLF
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# ---------------- 二进制（禁止任何转换与文本 diff） ----------------
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.ttf       binary
+*.otf       binary
+*.zip       binary
+*.7z        binary
+*.gz        binary
+*.dll       binary
+*.exe       binary
+*.pdb       binary
+*.nupkg     binary
+*.snupkg    binary
+*.dmp       binary
+
+# ---------------- 语言统计（GitHub Linguist） ----------------
+# 协议层来自 Unity 客户端仓库，统计时不计入本仓库语言占比
+src/EFramework.Net/Protocol/** linguist-vendored
