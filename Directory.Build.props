@@ -24,4 +24,14 @@
     <NoWarn>$(NoWarn);CS1591;CA1716;CA1510;CA1513</NoWarn>
   </PropertyGroup>
 
+  <!--
+    版本基线：与 Unity 包 cn.efefef.net 的 package.json version 保持完全一致。
+    · 本服务端是该包的协议对端，版本号唯一有意义的锚点就是它所实现的包版本。
+    · 协议层（帧格式 / Opcode 语义 / KCP 参数）有任何变动 = 客户端需同步升级，两侧版本必须一起动。
+    · 升级 EF 时改这一处；tools/sync-protocol.py 的校验模式会检查两者是否漂移。
+  -->
+  <PropertyGroup>
+    <Version>0.0.1</Version>
+  </PropertyGroup>
+
 </Project>

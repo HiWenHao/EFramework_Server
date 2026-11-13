@@ -80,6 +80,7 @@ EFramework_Server/
 | RPC | `Call<T>` 发 rpcId≠0 | 回包时回显同一 rpcId | 客户端按 rpcId 配对 |
 | 序列化 | 无内置，需注入 | 默认 `JsonMessageSerializer` | 两侧必须同构 |
 | Opcode | `1~999` 框架 / `1000+` 业务 | 相同 | `NetOpcode` |
+| 版本 | `package.json` 的 `0.0.1` | `0.0.1`（`Directory.Build.props`） | 服务端版本跟着包走，不另立版本线 |
 
 ### 关键设计：为什么按端点而不是 conv 建会话
 

@@ -87,7 +87,7 @@ namespace EFramework.App
         {
             Console.WriteLine();
             Console.WriteLine("==============================================================");
-            Console.WriteLine("  EFramework Server (EF.Net)");
+            Console.WriteLine($"  EFramework Server (EF.Net)  v{NetServer.Version}");
             Console.WriteLine("--------------------------------------------------------------");
             Console.WriteLine($"  UDP endpoint : {server.LocalEndPoint}");
             Console.WriteLine($"  Tick         : {server.Options.TickIntervalMs} ms");

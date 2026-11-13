@@ -4,15 +4,20 @@
 内容必须与客户端逐字一致：KCP 是「线」上协议，任何一行差异都会让两侧不通。
 换行不计入比较（仓库内由 .gitattributes 统一存 LF，工作区换行跟随平台）。
 
+顺带校验版本基线：Directory.Build.props 的 <Version> 必须等于 cn.efefef.net 的 package.json version
+（本服务端是该包的协议对端，版本号跟着包走）。
+
 用法：
     python tools/sync-protocol.py                      # 用默认 Unity 包路径同步
     python tools/sync-protocol.py --package <包目录>    # 指定 cn.efefef.net 包目录
-    python tools/sync-protocol.py --check              # 只校验不写入，漂移时退出码 1
+    python tools/sync-protocol.py --check              # 只校验不写入；内容或版本漂移时退出码 1
 
 Unity 包目录也可用环境变量 EF_NET_PACKAGE 指定，避免每次敲参数。
 """
 import argparse
+import json
 import os
+import re
 import sys
 
 FILES = ["Kcp.cs", "MessagePipe.cs", "NetOpcode.cs", "NetProtocolException.cs"]
@@ -26,6 +31,10 @@ ENV_PACKAGE = "EF_NET_PACKAGE"
 
 # 目标目录相对仓库根，随 checkout 位置变化，故从脚本自身位置推导
 DST_RELATIVE = os.path.join("src", "EFramework.Net", "Protocol")
+
+# 版本基线所在文件（相对仓库根）
+PROPS_RELATIVE = "Directory.Build.props"
+VERSION_PATTERN = re.compile(r"<Version>\s*([^<\s]+)\s*</Version>")
 
 
 def repo_root():
@@ -61,6 +70,51 @@ def normalize(data):
     return data.replace(b"\r\n", b"\n")
 
 
+def read_package_version(package_dir):
+    """读取 cn.efefef.net 的 package.json 版本；缺失返回 None。"""
+    path = os.path.join(package_dir, "package.json")
+    if not os.path.isfile(path):
+        return None
+
+    # utf-8-sig：容忍 BOM
+    with open(path, encoding="utf-8-sig") as f:
+        return json.load(f).get("version")
+
+
+def read_props_version():
+    """读取 Directory.Build.props 的 <Version>；缺失返回 None。"""
+    path = os.path.join(repo_root(), PROPS_RELATIVE)
+    if not os.path.isfile(path):
+        return None
+
+    with open(path, encoding="utf-8-sig") as f:
+        match = VERSION_PATTERN.search(f.read())
+
+    return match.group(1) if match else None
+
+
+def check_version(package_dir, strict):
+    """校验服务端版本是否跟随 Unity 包版本。strict=True 时不一致即视为失败。"""
+    package_version = read_package_version(package_dir)
+    props_version = read_props_version()
+
+    if package_version is None:
+        print("[WARN] package.json version not found; version check skipped")
+        return True
+    if props_version is None:
+        print("[WARN] <Version> not found in Directory.Build.props; version check skipped")
+        return True
+
+    if package_version == props_version:
+        print(f"[OK] version {props_version} matches cn.efefef.net")
+        return True
+
+    print(f"[WARN] version drift: cn.efefef.net={package_version}, Directory.Build.props={props_version}")
+    print(f"       set <Version>{package_version}</Version> in {PROPS_RELATIVE} "
+          f"(server version tracks the package it implements)")
+    return not strict
+
+
 def main(argv):
     parser = argparse.ArgumentParser(
         description="Sync pure-C# protocol files from the Unity package cn.efefef.net.")
@@ -75,7 +129,7 @@ def main(argv):
     parser.add_argument(
         "--check",
         action="store_true",
-        help="verify only, do not write; exit 1 when the copies differ (CI friendly)")
+        help="verify only, do not write; exit 1 when the copies or the version baseline differ")
     args = parser.parse_args(argv)
 
     source_dir = os.path.join(args.package, "Runtime")
@@ -127,9 +181,14 @@ def main(argv):
     print(f"\nsource: {source_dir}")
     print(f"dest  : {dest_dir}")
 
+    version_ok = check_version(args.package, args.check)
+
     if args.check:
         if drifted:
             print(f"[FAIL] {len(drifted)} file(s) out of sync: {', '.join(drifted)}")
+            return 1
+        if not version_ok:
+            print("[FAIL] version baseline is out of date")
             return 1
         print(f"[OK] all {len(FILES)} file(s) in sync")
         return 0

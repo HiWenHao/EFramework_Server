@@ -46,10 +46,13 @@ chore(tools): sync-protocol 增加 --check 供 CI 校验漂移
 ## 3. 分支与发布
 
 - **trunk-based**：`master` 始终可构建、可用例。功能开发走短分支 `feat/xxx`、`fix/xxx`，合完即删。
-- 版本用语义化版本，打在 tag 上（`v0.3.0`）。
-- **协议层改动即 breaking**：只要动了帧格式、Opcode 语义、KCP 参数默认值，就必须升 **minor 以上**，
-  并在提交正文里写明「客户端需要同步到哪个版本」，因为它会让新旧客户端不兼容。
-- 服务端与客户端的版本对应关系记在 tag 的 release note 里，别只记在脑子里。
+- **版本号 = `cn.efefef.net` 的 `package.json` version**。本服务端是该包的协议对端，不另立版本线，
+  所以版本号只有一个来源：`Directory.Build.props` 的 `<Version>`，它必须与包版本逐字相同。
+  升级 EF 时改这一处，`NetServer.Version`（启动日志与横幅会用）随之变化。
+- tag 用 `v<包版本>`（当前 `v0.0.1`），把「与哪个客户端包版本配对」固化在标签里。
+- **协议层改动即 breaking**：只要动了帧格式、Opcode 语义、KCP 参数默认值，就必须先升客户端包版本，
+  再同步服务端 `<Version>`，并在提交正文里写明「客户端需同步到哪个版本」——新旧客户端不兼容。
+- 忘了同步会有兜底：`tools/sync-protocol.py` 的校验模式会比对两个版本号，不一致直接失败。
 
 ## 4. 协议层纪律（最容易出事的地方）
 

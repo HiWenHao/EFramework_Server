@@ -8,6 +8,7 @@
 
 using System;
 using System.Net;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using EasyFramework.Server.Handshake;
@@ -96,6 +97,13 @@ namespace EasyFramework.Server
         /// </summary>
         public ServerDispatcher Dispatcher => _dispatcher;
 
+        /// <summary>
+        /// 框架版本，与 Unity 包 cn.efefef.net 的 package.json version 一致（由 Directory.Build.props 注入）
+        /// <para>Framework version, aligned with the Unity package cn.efefef.net package.json version
+        /// (injected by Directory.Build.props)</para>
+        /// </summary>
+        public static string Version { get; } = ResolveVersion();
+
         #endregion
 
         #region Methods
@@ -157,7 +165,7 @@ namespace EasyFramework.Server
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default);
 
-            _logger?.Info($"[SERVER] listening on {_transport.LocalEndPoint} " +
+            _logger?.Info($"[SERVER v{Version}] listening on {_transport.LocalEndPoint} " +
                           $"(tick={_options.TickIntervalMs}ms, handshake={(_options.RequireHandshake ? "required" : "optional")}, " +
                           $"maxSessions={_options.MaxSessions})");
         }
@@ -278,6 +286,18 @@ namespace EasyFramework.Server
 
             _cancellation.Dispose();
             _transport.Dispose();
+        }
+
+        // 取信息版本号；若将来接入 SourceLink 会带 +<hash> 后缀，这里只取主版本段
+        private static string ResolveVersion()
+        {
+            string informational = typeof(NetServer).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+            if (string.IsNullOrEmpty(informational)) return "0.0.0";
+
+            int suffix = informational.IndexOf('+');
+            return suffix >= 0 ? informational.Substring(0, suffix) : informational;
         }
 
         // 专用长任务线程：阻塞式泵不能占用线程池
