@@ -1,0 +1,85 @@
+# ============================================================
+# EFramework_Server · Git 忽略规则
+# 原则：只提交源码、工程文件、文档与脚本；凡「本机可再生成」或「个人环境」一律忽略。
+# ============================================================
+
+# ---------------- 构建 / 发布产物 ----------------
+# SDK 风格工程的编译输出（含 project.assets.json、生成的 AssemblyInfo 等）
+[Bb]in/
+[Oo]bj/
+
+# 旧式工程布局的输出目录
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# 本地产物与发布目录
+artifacts/
+publish/
+PublishProfiles/
+
+# ---------------- IDE / 编辑器 ----------------
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userprefs
+*.sln.docstates
+
+# JetBrains Rider
+# 说明：整目录忽略（个人环境，Rider 会按需重建）。
+# 若日后要共享编码/索引设置，改为提交 encodings.xml 与 indexLayout.xml，
+# 并把下面的 ".idea/" 换成只忽略 "workspace.xml" 与 "shelf/"。
+.idea/
+_ReSharper*/
+*.DotSettings.user
+*.sln.DotSettings.user
+
+# VS Code（.vscode/launch.json 属于个人调试配置，不入库）
+.vscode/
+
+# Vim / 临时交换文件
+*.swp
+*.swo
+*~
+
+# ---------------- 测试 / 覆盖率 ----------------
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.xml
+BenchmarkDotNet.Artifacts/
+*.received.*
+
+# ---------------- 运行期产物 ----------------
+# 服务端运行日志（默认写 logs/ 或 *.log）
+logs/
+*.log
+
+# 崩溃转储
+*.dmp
+*.mdmp
+core
+
+# ---------------- Python（tools/sync-protocol.py） ----------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---------------- 系统 / 临时文件 ----------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# ---------------- NuGet ----------------
+# 打包产物（正常落在 bin/ 下，双保险）
+*.nupkg
+*.snupkg

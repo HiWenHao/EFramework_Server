@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    服务端运行时：传输层 → 会话层（KCP）→ 分发层 → 宿主循环。
+    零第三方依赖：日志、序列化、传输全部走接口 + 内置实现，便于替换。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>EFramework.Server</AssemblyName>
+    <RootNamespace>EasyFramework.Server</RootNamespace>
+    <Description>EF.Net 服务端运行时：UDP 传输、KCP 会话管理、Opcode 分发与定频消息泵</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EFramework.Net\EFramework.Net.csproj" />
+  </ItemGroup>
+
+</Project>

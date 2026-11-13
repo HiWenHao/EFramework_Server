@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 可执行入口 + 示例业务：验证「启动即可被 EF.Net 客户端直连」 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>EFramework.App</AssemblyName>
+    <RootNamespace>EFramework.App</RootNamespace>
+    <Description>EF.Net 服务端示例进程：启动后监听 UDP 端口，供 Unity 客户端直连</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EFramework.Server\EFramework.Server.csproj" />
+  </ItemGroup>
+
+</Project>

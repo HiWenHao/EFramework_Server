@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    协议契约层：与 Unity 客户端 cn.efefef.net 逐字节对齐的「线」上格式。
+    目标框架取 netstandard2.1，因此本工程可原样链接进 Unity 工程复用（Unity 2022.3 支持）。
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>EFramework.Net</AssemblyName>
+    <RootNamespace>EasyFramework.Systems.Net</RootNamespace>
+    <Description>EF.Net 协议契约层：KCP 可靠传输 + 12 字节帧编解码 + Opcode 约定</Description>
+  </PropertyGroup>
+
+</Project>

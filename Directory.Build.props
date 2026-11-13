@@ -1,0 +1,27 @@
+<Project>
+
+  <!-- 全解决方案共享的编译约定（与 Unity 客户端 EFramework 代码风格保持一致） -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+
+    <!-- 与客户端对齐：不使用可空引用注解，避免 NRE 标注噪音污染从客户端同步的文件 -->
+    <Nullable>disable</Nullable>
+
+    <!-- 与客户端对齐：显式 using，不依赖隐式全局 using -->
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+
+    <!--
+      告警抑制说明：
+      CS1591 缺 XML 注释（本工程逐成员写注释，但接口实现与私有成员不强制）
+      CA1716 接口成员名与其它语言关键字冲突（Stop / Error 是刻意选择的领域命名）
+      CA1510/CA1513 建议改用 ThrowIfNull/ThrowIf（与 Unity 侧 ?? throw 写法保持一致，便于两侧对照阅读）
+    -->
+    <NoWarn>$(NoWarn);CS1591;CA1716;CA1510;CA1513</NoWarn>
+  </PropertyGroup>
+
+</Project>
